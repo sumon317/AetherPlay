@@ -1,0 +1,6 @@
+{
+  "name": "AetherPlay",
+  "description": "High-performance Jetpack Compose video and audio media player with hardware acceleration, gesture controls, customizable subtitle engine, playlists, background playback, and studio audio equalizer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
