@@ -114,9 +114,27 @@ class PlaybackService : MediaSessionService() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         val currentPlayer = mediaSession?.player
-        if (currentPlayer == null || !currentPlayer.playWhenReady || currentPlayer.mediaItemCount == 0) {
-            stopSelf()
+        val currentUri = currentPlayer?.currentMediaItem?.mediaId
+        val currentPos = currentPlayer?.currentPosition?.coerceAtLeast(0L) ?: 0L
+        val app = application as? AetherPlayApp
+
+        if (currentUri != null && currentPos > 0L && app != null) {
+            CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+                runCatching {
+                    app.container.mediaRepository.updatePlaybackProgress(currentUri, currentPos)
+                }
+            }
         }
+
+        currentPlayer?.let { p ->
+            p.playWhenReady = false
+            p.stop()
+            p.clearMediaItems()
+        }
+        app?.container?.playerControllerHolder?.stopAndClear()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {

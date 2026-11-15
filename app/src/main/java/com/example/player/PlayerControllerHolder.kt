@@ -95,28 +95,75 @@ class PlayerControllerHolder(
     private var positionJob: Job? = null
     private var sleepTimerJob: Job? = null
     private var lastSavedPositionTick = 0L
+    private var attachedController: MediaController? = null
+    private var attachedListener: Player.Listener? = null
 
     fun connect() {
-        if (controllerFuture != null) return
+        val current = _controller.value
+        if (current != null && current.isConnected) return
+        val existingFuture = controllerFuture
+        if (existingFuture != null && !existingFuture.isDone) return
+
+        if (existingFuture != null) {
+            runCatching { MediaController.releaseFuture(existingFuture) }
+            controllerFuture = null
+        }
+        _controller.value = null
+
         val sessionToken = SessionToken(context, ComponentName(context, PlaybackService::class.java))
-        val future = MediaController.Builder(context, sessionToken).buildAsync()
+        val future = MediaController.Builder(context, sessionToken)
+            .setListener(object : MediaController.Listener {
+                override fun onDisconnected(controller: MediaController) {
+                    scope.launch {
+                        if (_controller.value == controller) {
+                            detachCurrentListener()
+                            _controller.value = null
+                            controllerFuture = null
+                            positionJob?.cancel()
+                            sleepTimerJob?.cancel()
+                            _uiState.value = PlaybackUiState()
+                        }
+                    }
+                }
+            })
+            .buildAsync()
         controllerFuture = future
         future.addListener(
             {
                 runCatching {
                     val ctrl = future.get()
-                    _controller.value = ctrl
-                    attachListener(ctrl)
-                    syncFullState(ctrl)
-                    startPositionTicker()
+                    if (controllerFuture == future) {
+                        _controller.value = ctrl
+                        attachListener(ctrl)
+                        syncFullState(ctrl)
+                        startPositionTicker()
+                    } else {
+                        ctrl.release()
+                    }
+                }.onFailure {
+                    if (controllerFuture == future) {
+                        controllerFuture = null
+                        _controller.value = null
+                    }
                 }
             },
             ContextCompat.getMainExecutor(context)
         )
     }
 
+    private fun detachCurrentListener() {
+        val prevCtrl = attachedController
+        val prevListener = attachedListener
+        if (prevCtrl != null && prevListener != null) {
+            runCatching { prevCtrl.removeListener(prevListener) }
+        }
+        attachedController = null
+        attachedListener = null
+    }
+
     private fun attachListener(ctrl: MediaController) {
-        ctrl.addListener(object : Player.Listener {
+        detachCurrentListener()
+        val listener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _uiState.update { it.copy(isPlaying = isPlaying) }
                 if (!isPlaying) persistCurrentProgress()
@@ -181,7 +228,10 @@ class PlayerControllerHolder(
                     it.copy(errorMessage = error.localizedMessage ?: "Playback error (${error.errorCodeName})")
                 }
             }
-        })
+        }
+        attachedController = ctrl
+        attachedListener = listener
+        ctrl.addListener(listener)
     }
 
     private fun startPositionTicker() {
@@ -234,11 +284,11 @@ class PlayerControllerHolder(
         scope.launch {
             connect()
             var waitCount = 0
-            while (_controller.value == null && waitCount < 30) {
+            while ((_controller.value == null || _controller.value?.isConnected != true) && waitCount < 40) {
                 delay(50L)
                 waitCount++
             }
-            val ctrl = _controller.value ?: return@launch
+            val ctrl = _controller.value?.takeIf { it.isConnected } ?: return@launch
             val prefs = settingsRepository.preferencesFlow.first()
             val shouldResume = resumeSavedPosition && prefs.resumePlayback
 
@@ -345,17 +395,26 @@ class PlayerControllerHolder(
     }
 
     fun cycleRepeatMode() {
-        val ctrl = _controller.value ?: return
-        ctrl.repeatMode = when (ctrl.repeatMode) {
+        val ctrl = _controller.value
+        val currentMode = ctrl?.repeatMode ?: _uiState.value.repeatMode
+        val nextMode = when (currentMode) {
             Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
             Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
             else -> Player.REPEAT_MODE_OFF
         }
+        if (ctrl != null) {
+            ctrl.repeatMode = nextMode
+        }
+        _uiState.update { it.copy(repeatMode = nextMode) }
     }
 
     fun toggleShuffle() {
-        val ctrl = _controller.value ?: return
-        ctrl.shuffleModeEnabled = !ctrl.shuffleModeEnabled
+        val ctrl = _controller.value
+        val nextShuffle = !(ctrl?.shuffleModeEnabled ?: _uiState.value.shuffleEnabled)
+        if (ctrl != null) {
+            ctrl.shuffleModeEnabled = nextShuffle
+        }
+        _uiState.update { it.copy(shuffleEnabled = nextShuffle) }
     }
 
     fun selectAudioTrack(option: TrackOption) {
@@ -594,6 +653,7 @@ class PlayerControllerHolder(
         persistCurrentProgress()
         positionJob?.cancel()
         sleepTimerJob?.cancel()
+        detachCurrentListener()
         controllerFuture?.let { MediaController.releaseFuture(it) }
         controllerFuture = null
         _controller.value = null

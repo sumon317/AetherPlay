@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -22,16 +23,22 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Audiotrack
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.Button
@@ -45,6 +52,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -76,14 +84,21 @@ import com.example.ui.components.formatDuration
 import com.example.ui.theme.MonoMetricsStyle
 import com.example.ui.viewmodel.AudioFilterTab
 import com.example.ui.viewmodel.LibraryUiState
+import com.example.ui.viewmodel.MediaFolder
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AudioScreen(
     uiState: LibraryUiState,
+    isFolderView: Boolean,
+    hasStoragePermission: Boolean,
     currentPlayingUri: String?,
     onSearchChange: (String) -> Unit,
     onSelectFilter: (AudioFilterTab) -> Unit,
+    onSelectFolderKey: (String?) -> Unit,
+    onToggleFolderView: () -> Unit,
+    onRescanDevice: () -> Unit,
+    onRequestStoragePermission: () -> Unit,
     onPlayAudio: (List<MediaItemEntity>, Int) -> Unit,
     onShufflePlay: (List<MediaItemEntity>) -> Unit,
     onToggleLike: (MediaItemEntity) -> Unit,
@@ -97,25 +112,91 @@ fun AudioScreen(
     var showSearch by remember { mutableStateOf(false) }
     var showImportMenu by remember { mutableStateOf(false) }
 
+    val activeFolder = uiState.activeAudioFolder
+    val isShowingFolderList = isFolderView &&
+        uiState.audioFilter == AudioFilterTab.ALL &&
+        activeFolder == null &&
+        uiState.searchQuery.isBlank()
+
+    BackHandler(enabled = activeFolder != null) {
+        onSelectFolderKey(null)
+    }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
         containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background.copy(alpha = 0.94f)
+                ),
+                navigationIcon = {
+                    if (activeFolder != null) {
+                        IconButton(
+                            onClick = { onSelectFolderKey(null) },
+                            modifier = Modifier.testTag("audio_folder_back")
+                        ) {
+                            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back to folders")
+                        }
+                    }
+                },
                 title = {
-                    Column {
-                        Text("Audio Studio", style = MaterialTheme.typography.headlineMedium)
-                        if (uiState.audioTracks.isNotEmpty()) {
+                    if (activeFolder != null) {
+                        Column {
                             Text(
-                                text = "${uiState.audioTracks.size} tracks • Hi-Res Ready",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                text = activeFolder.name,
+                                style = MaterialTheme.typography.headlineSmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
+                            Text(
+                                text = "${uiState.audioTracks.size} ${if (uiState.audioTracks.size == 1) "track" else "tracks"} • ${activeFolder.pathLabel}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    } else {
+                        Column {
+                            Text("Audio Studio", style = MaterialTheme.typography.headlineMedium)
+                            val subtitle = when {
+                                isFolderView && uiState.audioFilter == AudioFilterTab.ALL && uiState.audioFolders.isNotEmpty() ->
+                                    "${uiState.audioFolders.size} ${if (uiState.audioFolders.size == 1) "folder" else "folders"} • ${uiState.allAudioCount} tracks"
+                                uiState.audioTracks.isNotEmpty() ->
+                                    "${uiState.audioTracks.size} tracks • Hi-Res Ready"
+                                else -> null
+                            }
+                            if (subtitle != null) {
+                                Text(
+                                    text = subtitle,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 },
                 actions = {
+                    if (activeFolder == null && uiState.audioFilter == AudioFilterTab.ALL) {
+                        IconButton(
+                            onClick = onToggleFolderView,
+                            modifier = Modifier.testTag("audio_folder_view_toggle")
+                        ) {
+                            Icon(
+                                imageVector = if (isFolderView) Icons.Rounded.LibraryMusic else Icons.Rounded.Folder,
+                                contentDescription = if (isFolderView) "Switch to all tracks" else "Switch to folder view"
+                            )
+                        }
+                    }
+                    IconButton(
+                        onClick = {
+                            if (hasStoragePermission) onRescanDevice() else onRequestStoragePermission()
+                        },
+                        modifier = Modifier.testTag("audio_rescan_button")
+                    ) {
+                        Icon(Icons.Rounded.Refresh, contentDescription = "Rescan device audio")
+                    }
                     IconButton(
                         onClick = onOpenEqualizer,
                         modifier = Modifier.testTag("audio_eq_button")
@@ -149,6 +230,14 @@ fun AudioScreen(
                     onDismissRequest = { showImportMenu = false }
                 ) {
                     DropdownMenuItem(
+                        text = { Text("Rescan Device Storage") },
+                        leadingIcon = { Icon(Icons.Rounded.Refresh, contentDescription = null) },
+                        onClick = {
+                            showImportMenu = false
+                            if (hasStoragePermission) onRescanDevice() else onRequestStoragePermission()
+                        }
+                    )
+                    DropdownMenuItem(
                         text = { Text("Pick Audio Files (MP3, FLAC, OPUS...)") },
                         leadingIcon = { Icon(Icons.Rounded.Audiotrack, contentDescription = null) },
                         onClick = {
@@ -173,13 +262,39 @@ fun AudioScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
+            if (uiState.isScanning) {
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = MaterialTheme.colorScheme.secondary
+                )
+            }
+
+            if (!hasStoragePermission) {
+                StoragePermissionBanner(
+                    onGrantClick = onRequestStoragePermission,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                )
+            }
+
             AnimatedVisibility(visible = showSearch) {
                 OutlinedTextField(
                     value = uiState.searchQuery,
                     onValueChange = onSearchChange,
-                    placeholder = { Text("Search songs, artists, albums...") },
+                    placeholder = {
+                        Text(
+                            if (activeFolder != null) "Search in ${activeFolder.name}..."
+                            else "Search songs, artists, albums, folders..."
+                        )
+                    },
                     singleLine = true,
                     leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                    trailingIcon = {
+                        if (uiState.searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { onSearchChange("") }) {
+                                Icon(Icons.Rounded.Close, contentDescription = "Clear search")
+                            }
+                        }
+                    },
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -187,42 +302,89 @@ fun AudioScreen(
                 )
             }
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f)
+            if (activeFolder == null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    items(AudioFilterTab.entries) { tab ->
-                        FilterChip(
-                            selected = uiState.audioFilter == tab,
-                            onClick = { onSelectFilter(tab) },
-                            label = { Text(tab.label) }
-                        )
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        items(AudioFilterTab.entries) { tab ->
+                            FilterChip(
+                                selected = uiState.audioFilter == tab,
+                                onClick = { onSelectFilter(tab) },
+                                label = { Text(tab.label) }
+                            )
+                        }
+                    }
+                    if (uiState.audioTracks.isNotEmpty()) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        FilledTonalButton(
+                            onClick = { onShufflePlay(uiState.audioTracks) },
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier.testTag("audio_shuffle_all")
+                        ) {
+                            Icon(Icons.Rounded.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Shuffle")
+                        }
                     }
                 }
-                if (uiState.audioTracks.isNotEmpty()) {
-                    Spacer(modifier = Modifier.width(8.dp))
+            } else if (uiState.audioTracks.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.End
+                ) {
                     FilledTonalButton(
                         onClick = { onShufflePlay(uiState.audioTracks) },
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        modifier = Modifier.testTag("audio_shuffle_all")
+                        modifier = Modifier.testTag("audio_folder_shuffle")
                     ) {
                         Icon(Icons.Rounded.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Shuffle")
+                        Text("Shuffle Folder")
                     }
                 }
             }
 
-            if (uiState.audioTracks.isEmpty()) {
+            if (isShowingFolderList) {
+                if (uiState.audioFolders.isEmpty()) {
+                    AudioEmptyState(
+                        isLikedFilter = false,
+                        hasStoragePermission = hasStoragePermission,
+                        onRequestStoragePermission = onRequestStoragePermission,
+                        onRescanDevice = onRescanDevice,
+                        onPickAudioFiles = onPickAudioFiles,
+                        onPickFolderTree = onPickFolderTree,
+                        onOpenEqualizer = onOpenEqualizer
+                    )
+                } else {
+                    LazyColumn(
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 112.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        items(uiState.audioFolders, key = { it.key }) { folder ->
+                            AudioFolderRow(
+                                folder = folder,
+                                onClick = { onSelectFolderKey(folder.key) }
+                            )
+                        }
+                    }
+                }
+            } else if (uiState.audioTracks.isEmpty()) {
                 AudioEmptyState(
                     isLikedFilter = uiState.audioFilter == AudioFilterTab.LIKED,
+                    hasStoragePermission = hasStoragePermission,
+                    onRequestStoragePermission = onRequestStoragePermission,
+                    onRescanDevice = onRescanDevice,
                     onPickAudioFiles = onPickAudioFiles,
                     onPickFolderTree = onPickFolderTree,
                     onOpenEqualizer = onOpenEqualizer
@@ -245,6 +407,74 @@ fun AudioScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun AudioFolderRow(
+    folder: MediaFolder,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .testTag("audio_folder_row")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                modifier = Modifier.size(52.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Folder,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.secondary,
+                    modifier = Modifier.padding(13.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = folder.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = folder.pathLabel,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                val countLabel = "${folder.items.size} ${if (folder.items.size == 1) "track" else "tracks"}"
+                val durationLabel = if (folder.totalDurationMs > 0L) formatDuration(folder.totalDurationMs) else ""
+                Text(
+                    text = listOf(countLabel, durationLabel).filter { it.isNotBlank() }.joinToString(" • "),
+                    style = MonoMetricsStyle,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1
+                )
+            }
+            Icon(
+                imageVector = Icons.Rounded.ChevronRight,
+                contentDescription = "Open folder",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
@@ -357,6 +587,9 @@ private fun AudioTrackRow(
 @Composable
 private fun AudioEmptyState(
     isLikedFilter: Boolean,
+    hasStoragePermission: Boolean,
+    onRequestStoragePermission: () -> Unit,
+    onRescanDevice: () -> Unit,
     onPickAudioFiles: () -> Unit,
     onPickFolderTree: () -> Unit,
     onOpenEqualizer: () -> Unit
@@ -411,7 +644,24 @@ private fun AudioEmptyState(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Button(
+                if (!isLikedFilter) {
+                    Button(
+                        onClick = if (hasStoragePermission) onRescanDevice else onRequestStoragePermission,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("empty_scan_device_audio_button")
+                    ) {
+                        Icon(
+                            imageVector = if (hasStoragePermission) Icons.Rounded.Refresh else Icons.Rounded.FolderOpen,
+                            contentDescription = null
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(if (hasStoragePermission) "Scan Device Audio" else "Allow All Files & Scan")
+                    }
+                }
+                FilledTonalButton(
                     onClick = onPickAudioFiles,
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier

@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.AppContainer
+import com.example.data.local.AudioDoubleTapAction
+import com.example.data.local.AudioSwipeAction
 import com.example.data.local.DecoderMode
 import com.example.data.local.SettingsRepository
 import com.example.data.local.SubtitlePreferences
@@ -40,6 +42,10 @@ class SettingsViewModel(
     fun setDoubleTapSeek(enabled: Boolean) = viewModelScope.launch { settingsRepository.setDoubleTapSeek(enabled) }
     fun setLongPress2x(enabled: Boolean) = viewModelScope.launch { settingsRepository.setLongPress2xSpeed(enabled) }
     fun resetGestureDefaults() = viewModelScope.launch { settingsRepository.resetGestureDefaults() }
+    fun setRotateAudioArtwork(rotate: Boolean) = viewModelScope.launch { settingsRepository.setRotateAudioArtwork(rotate) }
+    fun setAudioSwipeDownAction(action: AudioSwipeAction) = viewModelScope.launch { settingsRepository.setAudioSwipeDownAction(action) }
+    fun setAudioSwipeUpAction(action: AudioSwipeAction) = viewModelScope.launch { settingsRepository.setAudioSwipeUpAction(action) }
+    fun setAudioDoubleTapAction(action: AudioDoubleTapAction) = viewModelScope.launch { settingsRepository.setAudioDoubleTapAction(action) }
     fun updateSubtitlePreferences(transform: (SubtitlePreferences) -> SubtitlePreferences) =
         viewModelScope.launch { settingsRepository.updateSubtitlePreferences(transform) }
 

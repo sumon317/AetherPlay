@@ -130,6 +130,7 @@ import com.example.player.TrackOption
 import com.example.ui.components.formatDuration
 import com.example.ui.components.formatSignedDeltaSeconds
 import com.example.ui.theme.JetBrainsMonoFontFamily
+import com.example.ui.theme.LocalIsDarkTheme
 import com.example.ui.theme.MonoMetricsStyle
 import com.example.ui.theme.PlusJakartaSansFontFamily
 import com.example.ui.theme.SpaceGroteskFontFamily
@@ -169,6 +170,7 @@ fun VideoPlayerScreen(
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
     val view = LocalView.current
+    val isDarkTheme = LocalIsDarkTheme.current
     val audioManager = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
 
     var showControls by remember { mutableStateOf(true) }
@@ -195,13 +197,15 @@ fun VideoPlayerScreen(
         if (uri != null) onAttachExternalSubtitle(uri)
     }
 
-    // Manage system bars visibility for true cinema immersion
+    // Manage system bars visibility & white icon legibility over dark cinema background
     DisposableEffect(showControls, isInPipMode) {
         val window = activity?.window
         if (window != null && !isInPipMode) {
             val insetsController = WindowCompat.getInsetsController(window, view)
             insetsController.systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            insetsController.isAppearanceLightStatusBars = false
+            insetsController.isAppearanceLightNavigationBars = false
             if (showControls) {
                 insetsController.show(WindowInsetsCompat.Type.systemBars())
             } else {
@@ -211,10 +215,12 @@ fun VideoPlayerScreen(
         onDispose { }
     }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(isDarkTheme) {
         onDispose {
             activity?.window?.let { window ->
                 val insetsController = WindowCompat.getInsetsController(window, view)
+                insetsController.isAppearanceLightStatusBars = !isDarkTheme
+                insetsController.isAppearanceLightNavigationBars = !isDarkTheme
                 insetsController.show(WindowInsetsCompat.Type.systemBars())
                 val lp = window.attributes
                 lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE

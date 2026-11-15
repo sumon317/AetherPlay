@@ -6,6 +6,7 @@ import android.provider.OpenableColumns
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
@@ -19,6 +20,9 @@ data class TimedSubtitleCue(
 )
 
 object SubtitleParser {
+
+    private const val MAX_SUBTITLE_CHARS = 2 * 1024 * 1024
+    private const val MAX_SUBTITLE_CUES = 20_000
 
     fun buildSubtitleConfiguration(context: Context, subtitleUri: Uri): MediaItem.SubtitleConfiguration {
         val fileName = runCatching {
@@ -38,24 +42,51 @@ object SubtitleParser {
         return MediaItem.SubtitleConfiguration.Builder(subtitleUri)
             .setMimeType(mimeType)
             .setLanguage("en")
-            .setLabel(fileName.substringBeforeLast('.'))
+            .setLabel(MediaSafety.sanitizeDisplayText(fileName.substringBeforeLast('.'), 80).ifBlank { "Subtitle" })
             .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
             .build()
     }
 
     suspend fun parseExternalSubtitleCues(context: Context, uri: Uri): List<TimedSubtitleCue> =
         withContext(Dispatchers.IO) {
-            runCatching {
+            if (!MediaSafety.isSafeExternalMediaUri(context, uri)) {
+                return@withContext emptyList()
+            }
+            try {
                 context.contentResolver.openInputStream(uri)?.use { stream ->
-                    val content = BufferedReader(InputStreamReader(stream)).readText()
-                    if (content.contains("WEBVTT", ignoreCase = true)) {
-                        parseVtt(content)
-                    } else {
-                        parseSrt(content)
-                    }
+                    val reader = BufferedReader(InputStreamReader(stream, Charsets.UTF_8))
+                    val content = readBoundedText(reader, MAX_SUBTITLE_CHARS)
+                    parseRawSubtitles(content)
                 } ?: emptyList()
-            }.getOrDefault(emptyList())
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Exception) {
+                emptyList()
+            }
         }
+
+    internal fun parseRawSubtitles(raw: String): List<TimedSubtitleCue> {
+        if (raw.isBlank()) return emptyList()
+        val bounded = if (raw.length > MAX_SUBTITLE_CHARS) raw.substring(0, MAX_SUBTITLE_CHARS) else raw
+        val cues = if (bounded.contains("WEBVTT", ignoreCase = true)) {
+            parseVtt(bounded)
+        } else {
+            parseSrt(bounded)
+        }
+        return if (cues.size > MAX_SUBTITLE_CUES) cues.take(MAX_SUBTITLE_CUES) else cues
+    }
+
+    private fun readBoundedText(reader: BufferedReader, maxChars: Int): String {
+        val sb = StringBuilder()
+        val buffer = CharArray(8192)
+        while (sb.length < maxChars) {
+            val remaining = maxChars - sb.length
+            val read = reader.read(buffer, 0, minOf(buffer.size, remaining))
+            if (read <= 0) break
+            sb.appendRange(buffer, 0, read)
+        }
+        return sb.toString()
+    }
 
     fun activeCueTextAt(cues: List<TimedSubtitleCue>, positionMs: Long, syncDelayMs: Long): String? {
         if (cues.isEmpty()) return null
@@ -69,6 +100,7 @@ object SubtitleParser {
         val timeRegex = Regex("""(\d{1,2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,.]\d{3})""")
 
         for (block in blocks) {
+            if (result.size >= MAX_SUBTITLE_CUES) break
             val lines = block.lines().map { it.trim() }.filter { it.isNotEmpty() }
             val matchLineIdx = lines.indexOfFirst { timeRegex.containsMatchIn(it) }
             if (matchLineIdx < 0) continue
@@ -92,6 +124,7 @@ object SubtitleParser {
         val timeRegex = Regex("""((?:\d{1,2}:)?\d{2}:\d{2}\.\d{3})\s*-->\s*((?:\d{1,2}:)?\d{2}:\d{2}\.\d{3})""")
 
         for (block in blocks) {
+            if (result.size >= MAX_SUBTITLE_CUES) break
             val lines = block.lines().map { it.trim() }.filter { it.isNotEmpty() }
             val matchLineIdx = lines.indexOfFirst { timeRegex.containsMatchIn(it) }
             if (matchLineIdx < 0) continue
@@ -118,8 +151,8 @@ object SubtitleParser {
             else -> return 0L
         }
         val secParts = sAndMs.split('.')
-        val s = secParts.getOrNull(0)?.toLongOrNull() ?: 0L
-        val ms = secParts.getOrNull(1)?.padEnd(3, '0')?.take(3)?.toLongOrNull() ?: 0L
-        return ((h * 3600L) + (m * 60L) + s) * 1000L + ms
+        val s = secParts.getOrNull(0)?.toLongOrNull()?.coerceIn(0L, 59L) ?: 0L
+        val ms = secParts.getOrNull(1)?.padEnd(3, '0')?.take(3)?.toLongOrNull()?.coerceIn(0L, 999L) ?: 0L
+        return ((h.coerceAtLeast(0L) * 3600L) + (m.coerceIn(0L, 59L) * 60L) + s) * 1000L + ms
     }
 }

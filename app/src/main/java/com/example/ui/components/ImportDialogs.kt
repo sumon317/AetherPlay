@@ -40,6 +40,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.example.data.local.MediaItemEntity
 import com.example.data.local.PlaylistWithItems
+import com.example.player.MediaSafety
 
 @Composable
 fun OpenStreamDialog(
@@ -49,6 +50,8 @@ fun OpenStreamDialog(
     var url by remember { mutableStateOf("") }
     var title by remember { mutableStateOf("") }
     var isVideo by remember { mutableStateOf(true) }
+    val isUrlValid = remember(url) { MediaSafety.isValidStreamUrl(url) }
+    val showUrlError = url.isNotBlank() && !isUrlValid
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -56,7 +59,7 @@ fun OpenStreamDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    text = "Supports HTTP/HTTPS, HLS (.m3u8), DASH (.mpd), MKV, MP4, FLAC, MP3, and Opus streams.",
+                    text = "Supports HTTP/HTTPS, RTSP, HLS (.m3u8), DASH (.mpd), MKV, MP4, FLAC, MP3, and Opus streams.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -65,6 +68,10 @@ fun OpenStreamDialog(
                     onValueChange = { url = it },
                     label = { Text("Stream URL") },
                     placeholder = { Text("https://example.com/stream.m3u8") },
+                    isError = showUrlError,
+                    supportingText = if (showUrlError) {
+                        { Text("Enter a valid http://, https://, or rtsp:// URL") }
+                    } else null,
                     singleLine = true,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -101,12 +108,14 @@ fun OpenStreamDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    if (url.isNotBlank()) {
-                        onConfirmStream(url.trim(), title.trim().ifBlank { null }, isVideo)
+                    val trimmed = url.trim()
+                    if (MediaSafety.isValidStreamUrl(trimmed)) {
+                        val safeTitle = MediaSafety.sanitizeDisplayText(title, 100).ifBlank { null }
+                        onConfirmStream(trimmed, safeTitle, isVideo)
                         onDismiss()
                     }
                 },
-                enabled = url.isNotBlank(),
+                enabled = isUrlValid,
                 modifier = Modifier.testTag("stream_play_button")
             ) {
                 Text("Play Stream")

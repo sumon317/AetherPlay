@@ -1,5 +1,9 @@
 package com.example
 
+import com.example.data.local.AudioDoubleTapAction
+import com.example.data.local.AudioSwipeAction
+import com.example.data.local.MediaItemEntity
+import com.example.data.local.UserPreferences
 import com.example.data.repository.MediaRepository
 import com.example.player.EqualizerEngine
 import com.example.player.EqualizerUiState
@@ -9,6 +13,8 @@ import com.example.ui.components.formatDuration
 import com.example.ui.components.formatFileSize
 import com.example.ui.components.formatResolution
 import com.example.ui.components.formatSignedDeltaSeconds
+import com.example.ui.viewmodel.LibraryViewModel
+import com.example.ui.viewmodel.MediaSortOrder
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -30,6 +36,76 @@ class MediaPlayerCoreTest {
         assertFalse(MediaRepository.isVideoMedia("podcast.opus", ""))
 
         assertFalse(MediaRepository.isSupportedMediaFile("readme.txt", "text/plain"))
+        assertEquals("audio/flac", MediaRepository.guessMimeFromName("track.flac"))
+        assertEquals("video/x-matroska", MediaRepository.guessMimeFromName("film.mkv"))
+    }
+
+    @Test
+    fun `folder view and music player gesture defaults match requirements`() {
+        val defaults = UserPreferences()
+        assertTrue(defaults.videoFolderView)
+        assertTrue(defaults.audioFolderView)
+        assertFalse(defaults.rotateAudioArtwork)
+        assertEquals(AudioSwipeAction.MINIMISE, defaults.audioSwipeDownAction)
+        assertEquals(AudioSwipeAction.OPEN_QUEUE, defaults.audioSwipeUpAction)
+        assertEquals(AudioDoubleTapAction.TOGGLE_LIKE, defaults.audioDoubleTapAction)
+        assertEquals(4, AudioSwipeAction.entries.size)
+        assertEquals(2, AudioDoubleTapAction.entries.size)
+    }
+
+    @Test
+    fun `buildFolders groups file uris by parent folder and formats storage paths`() {
+        val items = listOf(
+            MediaItemEntity(
+                uri = "file:///storage/emulated/0/Movies/Action/trailer.mp4",
+                title = "Trailer",
+                durationMs = 90_000L,
+                fileSizeBytes = 10_000_000L,
+                isVideo = true,
+                folderName = "Action"
+            ),
+            MediaItemEntity(
+                uri = "file:///storage/emulated/0/Movies/Action/behind_scenes.mkv",
+                title = "Behind Scenes",
+                durationMs = 30_000L,
+                fileSizeBytes = 4_000_000L,
+                isVideo = true,
+                folderName = "Action"
+            ),
+            MediaItemEntity(
+                uri = "file:///storage/ABCD-1234/Download/concert.mp4",
+                title = "Concert",
+                durationMs = 120_000L,
+                fileSizeBytes = 25_000_000L,
+                isVideo = true,
+                folderName = "Download"
+            ),
+            MediaItemEntity(
+                uri = "https://example.com/live.m3u8",
+                title = "Live Feed",
+                isVideo = true,
+                folderName = "Streams",
+                isStream = true
+            )
+        )
+
+        val folders = LibraryViewModel.buildFolders(items, isVideo = true, sortOrder = MediaSortOrder.NAME_ASC)
+        assertEquals(3, folders.size)
+
+        val actionFolder = folders.first { it.name == "Action" }
+        assertEquals("/storage/emulated/0/Movies/Action", actionFolder.key)
+        assertEquals("Internal Storage/Movies/Action", actionFolder.pathLabel)
+        assertEquals(2, actionFolder.items.size)
+        assertEquals(120_000L, actionFolder.totalDurationMs)
+        assertEquals(14_000_000L, actionFolder.totalSizeBytes)
+        assertEquals("Behind Scenes", actionFolder.items.first().title)
+
+        val sdFolder = folders.first { it.name == "Download" }
+        assertEquals("SD Card/Download", sdFolder.pathLabel)
+
+        val streamFolder = folders.first { it.name == "Streams" }
+        assertEquals("virtual:streams", streamFolder.key)
+        assertEquals("Network Streams", streamFolder.pathLabel)
     }
 
     @Test

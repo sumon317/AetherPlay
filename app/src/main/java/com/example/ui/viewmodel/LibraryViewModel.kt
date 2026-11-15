@@ -16,10 +16,10 @@ import com.example.player.PlayerControllerHolder
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.io.File
 
 enum class MediaSortOrder(val label: String) {
     RECENT("Recently Added"),
@@ -34,20 +34,41 @@ enum class AudioFilterTab(val label: String) {
     RECENT("Recently Played")
 }
 
+data class MediaFolder(
+    val key: String,
+    val name: String,
+    val pathLabel: String,
+    val items: List<MediaItemEntity>,
+    val totalSizeBytes: Long,
+    val totalDurationMs: Long,
+    val previewUri: String?,
+    val isVideoFolder: Boolean
+)
+
 data class LibraryUiState(
     val videos: List<MediaItemEntity> = emptyList(),
+    val allVideosCount: Int = 0,
     val audioTracks: List<MediaItemEntity> = emptyList(),
+    val allAudioCount: Int = 0,
     val likedItems: List<MediaItemEntity> = emptyList(),
     val continueWatching: List<MediaItemEntity> = emptyList(),
     val playlists: List<PlaylistWithItems> = emptyList(),
-    val videoFolders: List<String> = listOf("All"),
-    val selectedFolder: String = "All",
+    val videoFolders: List<MediaFolder> = emptyList(),
+    val selectedVideoFolderKey: String? = null,
+    val audioFolders: List<MediaFolder> = emptyList(),
+    val selectedAudioFolderKey: String? = null,
     val searchQuery: String = "",
     val sortOrder: MediaSortOrder = MediaSortOrder.RECENT,
     val audioFilter: AudioFilterTab = AudioFilterTab.ALL,
     val isScanning: Boolean = false,
     val statusBanner: String? = null
-)
+) {
+    val activeVideoFolder: MediaFolder?
+        get() = selectedVideoFolderKey?.let { key -> videoFolders.firstOrNull { it.key == key } }
+
+    val activeAudioFolder: MediaFolder?
+        get() = selectedAudioFolderKey?.let { key -> audioFolders.firstOrNull { it.key == key } }
+}
 
 class LibraryViewModel(
     private val mediaRepository: MediaRepository,
@@ -56,7 +77,8 @@ class LibraryViewModel(
 ) : ViewModel() {
 
     private val searchQuery = MutableStateFlow("")
-    private val selectedFolder = MutableStateFlow("All")
+    private val selectedVideoFolderKey = MutableStateFlow<String?>(null)
+    private val selectedAudioFolderKey = MutableStateFlow<String?>(null)
     private val sortOrder = MutableStateFlow(MediaSortOrder.RECENT)
     private val audioFilter = MutableStateFlow(AudioFilterTab.ALL)
     private val isScanning = MutableStateFlow(false)
@@ -75,9 +97,10 @@ class LibraryViewModel(
         LibraryDataBundle(videos, audio, liked, recent, playlists)
     }
 
-    private val filterInputs = combine(
+    private val filterInputs = combine<Any?, FilterBundle>(
         searchQuery,
-        selectedFolder,
+        selectedVideoFolderKey,
+        selectedAudioFolderKey,
         sortOrder,
         audioFilter,
         isScanning,
@@ -85,20 +108,26 @@ class LibraryViewModel(
     ) { arr ->
         FilterBundle(
             query = arr[0] as String,
-            folder = arr[1] as String,
-            sort = arr[2] as MediaSortOrder,
-            audioTab = arr[3] as AudioFilterTab,
-            scanning = arr[4] as Boolean,
-            banner = arr[5] as String?
+            videoFolderKey = arr[1] as String?,
+            audioFolderKey = arr[2] as String?,
+            sort = arr[3] as MediaSortOrder,
+            audioTab = arr[4] as AudioFilterTab,
+            scanning = arr[5] as Boolean,
+            banner = arr[6] as String?
         )
     }
 
     val uiState: StateFlow<LibraryUiState> = combine(libraryInputs, filterInputs) { data, filters ->
-        val folders = listOf("All") + data.videos.map { it.folderName }.distinct().sorted()
-        val activeFolder = if (filters.folder in folders) filters.folder else "All"
+        val allVideoFolders = buildFolders(data.videos, isVideo = true, sortOrder = filters.sort)
+        val activeVideoKey = filters.videoFolderKey?.takeIf { key -> allVideoFolders.any { it.key == key } }
 
-        val filteredVideos = data.videos
-            .filter { activeFolder == "All" || it.folderName == activeFolder }
+        val videoBase = if (activeVideoKey != null) {
+            allVideoFolders.firstOrNull { it.key == activeVideoKey }?.items.orEmpty()
+        } else {
+            data.videos
+        }
+
+        val filteredVideos = videoBase
             .filter {
                 filters.query.isBlank() ||
                     it.title.contains(filters.query, ignoreCase = true) ||
@@ -106,8 +135,17 @@ class LibraryViewModel(
             }
             .sortWithOrder(filters.sort)
 
+        val allAudioFolders = buildFolders(data.audio, isVideo = false, sortOrder = filters.sort)
+        val activeAudioKey = filters.audioFolderKey?.takeIf { key -> allAudioFolders.any { it.key == key } }
+
         val baseAudio = when (filters.audioTab) {
-            AudioFilterTab.ALL -> data.audio
+            AudioFilterTab.ALL -> {
+                if (activeAudioKey != null) {
+                    allAudioFolders.firstOrNull { it.key == activeAudioKey }?.items.orEmpty()
+                } else {
+                    data.audio
+                }
+            }
             AudioFilterTab.LIKED -> data.liked.filter { !it.isVideo }
             AudioFilterTab.RECENT -> data.continueWatching.filter { !it.isVideo }
         }
@@ -117,18 +155,23 @@ class LibraryViewModel(
                 filters.query.isBlank() ||
                     it.title.contains(filters.query, ignoreCase = true) ||
                     it.artist.contains(filters.query, ignoreCase = true) ||
-                    it.album.contains(filters.query, ignoreCase = true)
+                    it.album.contains(filters.query, ignoreCase = true) ||
+                    it.folderName.contains(filters.query, ignoreCase = true)
             }
             .sortWithOrder(filters.sort)
 
         LibraryUiState(
             videos = filteredVideos,
+            allVideosCount = data.videos.size,
             audioTracks = filteredAudio,
+            allAudioCount = data.audio.size,
             likedItems = data.liked,
             continueWatching = data.continueWatching.filter { it.isVideo && it.lastPlayedPositionMs > 0L },
             playlists = data.playlists,
-            videoFolders = folders,
-            selectedFolder = activeFolder,
+            videoFolders = allVideoFolders,
+            selectedVideoFolderKey = activeVideoKey,
+            audioFolders = allAudioFolders,
+            selectedAudioFolderKey = activeAudioKey,
             searchQuery = filters.query,
             sortOrder = filters.sort,
             audioFilter = filters.audioTab,
@@ -145,8 +188,12 @@ class LibraryViewModel(
         searchQuery.value = query
     }
 
-    fun setSelectedFolder(folder: String) {
-        selectedFolder.value = folder
+    fun setSelectedVideoFolderKey(folderKey: String?) {
+        selectedVideoFolderKey.value = folderKey
+    }
+
+    fun setSelectedAudioFolderKey(folderKey: String?) {
+        selectedAudioFolderKey.value = folderKey
     }
 
     fun setSortOrder(order: MediaSortOrder) {
@@ -155,6 +202,9 @@ class LibraryViewModel(
 
     fun setAudioFilter(tab: AudioFilterTab) {
         audioFilter.value = tab
+        if (tab != AudioFilterTab.ALL) {
+            selectedAudioFolderKey.value = null
+        }
     }
 
     fun toggleVideoGridMode() {
@@ -163,8 +213,45 @@ class LibraryViewModel(
         }
     }
 
+    fun toggleVideoFolderView() {
+        viewModelScope.launch {
+            val next = !preferences.value.videoFolderView
+            settingsRepository.setVideoFolderView(next)
+            if (!next) selectedVideoFolderKey.value = null
+        }
+    }
+
+    fun toggleAudioFolderView() {
+        viewModelScope.launch {
+            val next = !preferences.value.audioFolderView
+            settingsRepository.setAudioFolderView(next)
+            if (!next) selectedAudioFolderKey.value = null
+        }
+    }
+
     fun clearStatusBanner() {
         statusBanner.value = null
+    }
+
+    fun scanDeviceMedia(showSummaryBanner: Boolean = false) {
+        if (isScanning.value) return
+        viewModelScope.launch {
+            isScanning.value = true
+            val result = runCatching { mediaRepository.scanDeviceMedia() }.getOrNull()
+            isScanning.value = false
+            if (result != null) {
+                if (showSummaryBanner || result.newlyAdded > 0) {
+                    statusBanner.value = when {
+                        result.newlyAdded > 0 ->
+                            "Found ${result.newlyAdded} new media ${if (result.newlyAdded == 1) "file" else "files"}"
+                        result.totalScanned > 0 ->
+                            "Library up to date (${result.totalScanned} files scanned)"
+                        else ->
+                            "No audio or video files found on device"
+                    }
+                }
+            }
+        }
     }
 
     fun importFiles(uris: List<Uri>, autoPlayFirst: Boolean = false, onOpenVideo: () -> Unit = {}, onOpenAudio: () -> Unit = {}) {
@@ -200,9 +287,16 @@ class LibraryViewModel(
     }
 
     fun addAndPlayStream(url: String, title: String?, isVideo: Boolean, onOpenVideo: () -> Unit, onOpenAudio: () -> Unit) {
-        if (url.isBlank()) return
+        val trimmed = url.trim()
+        if (!com.example.player.MediaSafety.isValidStreamUrl(trimmed)) {
+            statusBanner.value = "Invalid stream URL"
+            return
+        }
         viewModelScope.launch {
-            val item = mediaRepository.importStreamUrl(url, title, isVideo)
+            val item = mediaRepository.importStreamUrl(trimmed, title, isVideo) ?: run {
+                statusBanner.value = "Unsupported stream URL"
+                return@launch
+            }
             playerController.playSingle(item, resumeSavedPosition = false)
             if (item.isVideo) onOpenVideo() else onOpenAudio()
         }
@@ -210,7 +304,10 @@ class LibraryViewModel(
 
     fun openExternalUri(uri: Uri, onOpenVideo: () -> Unit, onOpenAudio: () -> Unit) {
         viewModelScope.launch {
-            val item = mediaRepository.importSingleExternalUri(uri) ?: return@launch
+            val item = mediaRepository.importSingleExternalUri(uri) ?: run {
+                statusBanner.value = "Unable to open media URI"
+                return@launch
+            }
             playerController.playSingle(item)
             if (item.isVideo) onOpenVideo() else onOpenAudio()
         }
@@ -266,13 +363,6 @@ class LibraryViewModel(
         }
     }
 
-    private fun List<MediaItemEntity>.sortWithOrder(order: MediaSortOrder): List<MediaItemEntity> = when (order) {
-        MediaSortOrder.RECENT -> sortedByDescending { it.addedAt }
-        MediaSortOrder.NAME_ASC -> sortedBy { it.title.lowercase() }
-        MediaSortOrder.DURATION_DESC -> sortedByDescending { it.durationMs }
-        MediaSortOrder.SIZE_DESC -> sortedByDescending { it.fileSizeBytes }
-    }
-
     private data class LibraryDataBundle(
         val videos: List<MediaItemEntity>,
         val audio: List<MediaItemEntity>,
@@ -283,7 +373,8 @@ class LibraryViewModel(
 
     private data class FilterBundle(
         val query: String,
-        val folder: String,
+        val videoFolderKey: String?,
+        val audioFolderKey: String?,
         val sort: MediaSortOrder,
         val audioTab: AudioFilterTab,
         val scanning: Boolean,
@@ -291,6 +382,88 @@ class LibraryViewModel(
     )
 
     companion object {
+        private data class FolderInfo(
+            val key: String,
+            val name: String,
+            val pathLabel: String
+        )
+
+        internal fun buildFolders(
+            items: List<MediaItemEntity>,
+            isVideo: Boolean,
+            sortOrder: MediaSortOrder
+        ): List<MediaFolder> {
+            if (items.isEmpty()) return emptyList()
+
+            val grouped = LinkedHashMap<String, MutableList<MediaItemEntity>>()
+            val namesByKey = HashMap<String, String>()
+            val pathsByKey = HashMap<String, String>()
+
+            for (item in items) {
+                val info = resolveFolderInfo(item)
+                grouped.getOrPut(info.key) { mutableListOf() }.add(item)
+                namesByKey.putIfAbsent(info.key, info.name)
+                pathsByKey.putIfAbsent(info.key, info.pathLabel)
+            }
+
+            return grouped.entries.map { (key, folderItems) ->
+                val sortedItems = folderItems.sortWithOrder(sortOrder)
+                MediaFolder(
+                    key = key,
+                    name = namesByKey[key] ?: "Media",
+                    pathLabel = pathsByKey[key] ?: "Local Storage",
+                    items = sortedItems,
+                    totalSizeBytes = sortedItems.sumOf { it.fileSizeBytes },
+                    totalDurationMs = sortedItems.sumOf { it.durationMs },
+                    previewUri = sortedItems.firstOrNull { !it.isStream }?.uri ?: sortedItems.firstOrNull()?.uri,
+                    isVideoFolder = isVideo
+                )
+            }.sortedWith(compareBy<MediaFolder> { it.name.lowercase() }.thenBy { it.pathLabel.lowercase() })
+        }
+
+        private fun resolveFolderInfo(item: MediaItemEntity): FolderInfo {
+            if (item.uri.startsWith("file://")) {
+                val filePath = runCatching { java.net.URI(item.uri).path }.getOrNull()
+                    ?: item.uri.removePrefix("file://")
+                val parent = File(filePath).parentFile
+                if (parent != null) {
+                    val abs = parent.absolutePath
+                    val name = parent.name.ifBlank { "Internal Storage" }
+                    val prettyPath = formatStoragePath(abs)
+                    return FolderInfo(key = abs, name = name, pathLabel = prettyPath)
+                }
+            }
+            val label = item.folderName.ifBlank { if (item.isStream) "Streams" else "Imported" }
+            val pathLabel = if (item.isStream) "Network Streams" else "Device / $label"
+            return FolderInfo(
+                key = "virtual:${label.lowercase()}",
+                name = label,
+                pathLabel = pathLabel
+            )
+        }
+
+        internal fun formatStoragePath(absPath: String): String {
+            val normalized = absPath.replace('\\', '/')
+            return when {
+                normalized == "/storage/emulated/0" -> "Internal Storage"
+                normalized.startsWith("/storage/emulated/0/") ->
+                    "Internal Storage/" + normalized.removePrefix("/storage/emulated/0/")
+                normalized.startsWith("/storage/") -> {
+                    val rest = normalized.removePrefix("/storage/")
+                    val slashIdx = rest.indexOf('/')
+                    if (slashIdx > 0) "SD Card/" + rest.substring(slashIdx + 1) else "SD Card"
+                }
+                else -> normalized
+            }
+        }
+
+        internal fun List<MediaItemEntity>.sortWithOrder(order: MediaSortOrder): List<MediaItemEntity> = when (order) {
+            MediaSortOrder.RECENT -> sortedByDescending { it.addedAt }
+            MediaSortOrder.NAME_ASC -> sortedBy { it.title.lowercase() }
+            MediaSortOrder.DURATION_DESC -> sortedByDescending { it.durationMs }
+            MediaSortOrder.SIZE_DESC -> sortedByDescending { it.fileSizeBytes }
+        }
+
         fun factory(container: AppContainer): ViewModelProvider.Factory = viewModelFactory {
             initializer {
                 LibraryViewModel(

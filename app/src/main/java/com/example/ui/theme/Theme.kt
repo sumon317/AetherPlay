@@ -1,6 +1,12 @@
 package com.example.ui.theme
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.os.Build
+import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -10,10 +16,17 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
 import com.example.data.local.ThemeMode
+
+val LocalIsDarkTheme = staticCompositionLocalOf { true }
 
 private val StudioDarkColorScheme = darkColorScheme(
     primary = ElectricCyan,
@@ -26,6 +39,8 @@ private val StudioDarkColorScheme = darkColorScheme(
     onSecondaryContainer = OnCoralContainerDark,
     tertiary = AmberGold,
     onTertiary = Color(0xFF2B1800),
+    tertiaryContainer = Color(0xFF4A2E00),
+    onTertiaryContainer = Color(0xFFFFE0B2),
     background = ObsidianBg,
     onBackground = PureMist,
     surface = ObsidianSurface,
@@ -54,6 +69,8 @@ private val StudioLightColorScheme = lightColorScheme(
     onSecondaryContainer = OnCoralContainerLight,
     tertiary = AmberDeep,
     onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFFFE6C2),
+    onTertiaryContainer = Color(0xFF331C00),
     background = DaylightBg,
     onBackground = InkDark,
     surface = DaylightSurface,
@@ -100,10 +117,56 @@ fun AetherPlayTheme(
         else -> StudioLightColorScheme
     }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = AppTypography,
-        shapes = AppShapes,
-        content = content
-    )
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        DisposableEffect(view, isDark, useDynamicColor) {
+            val activity = view.context.findThemeActivity()
+            val window = activity?.window
+            if (window != null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    window.isNavigationBarContrastEnforced = false
+                }
+                val legacyDarkScrim = android.graphics.Color.argb(0x80, 0x1B, 0x1B, 0x1B)
+                val statusBarStyle = if (isDark) {
+                    SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                } else {
+                    SystemBarStyle.light(
+                        android.graphics.Color.TRANSPARENT,
+                        legacyDarkScrim
+                    )
+                }
+                val navigationBarStyle = if (isDark) {
+                    SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                } else {
+                    SystemBarStyle.light(
+                        android.graphics.Color.TRANSPARENT,
+                        legacyDarkScrim
+                    )
+                }
+                (activity as? ComponentActivity)?.enableEdgeToEdge(
+                    statusBarStyle = statusBarStyle,
+                    navigationBarStyle = navigationBarStyle
+                )
+                val insetsController = WindowCompat.getInsetsController(window, view)
+                insetsController.isAppearanceLightStatusBars = !isDark
+                insetsController.isAppearanceLightNavigationBars = !isDark
+            }
+            onDispose { }
+        }
+    }
+
+    CompositionLocalProvider(LocalIsDarkTheme provides isDark) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = AppTypography,
+            shapes = AppShapes,
+            content = content
+        )
+    }
+}
+
+private tailrec fun Context.findThemeActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findThemeActivity()
+    else -> null
 }

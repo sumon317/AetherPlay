@@ -82,7 +82,9 @@ fun GestureControlsScreen(
         containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background.copy(alpha = 0.94f)
+                ),
                 navigationIcon = {
                     IconButton(
                         onClick = onBack,

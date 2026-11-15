@@ -24,6 +24,9 @@ interface MediaDao {
     @Query("SELECT * FROM media_items WHERE lastPlayedAt > 0 ORDER BY lastPlayedAt DESC LIMIT 12")
     fun observeContinueWatching(): Flow<List<MediaItemEntity>>
 
+    @Query("SELECT * FROM media_items")
+    suspend fun getAllMediaOnce(): List<MediaItemEntity>
+
     @Query("SELECT * FROM media_items WHERE uri = :uri LIMIT 1")
     suspend fun getMediaByUri(uri: String): MediaItemEntity?
 
@@ -44,6 +47,9 @@ interface MediaDao {
 
     @Query("DELETE FROM media_items WHERE uri = :uri")
     suspend fun deleteMediaByUri(uri: String)
+
+    @Query("DELETE FROM media_items WHERE uri IN (:uris)")
+    suspend fun deleteMediaByUris(uris: List<String>)
 
     // Playlists
     @Transaction

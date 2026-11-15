@@ -1,14 +1,27 @@
 package com.example.ui.screens
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +33,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -47,20 +61,29 @@ import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.Subtitles
+import androidx.compose.material.icons.rounded.UploadFile
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -74,18 +97,40 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.media3.common.Player
+import com.example.data.local.AudioDoubleTapAction
+import com.example.data.local.AudioSwipeAction
 import com.example.data.local.MediaItemEntity
+import com.example.data.local.SubtitleEdgeStyle
+import com.example.data.local.SubtitleFontStyle
+import com.example.data.local.SubtitlePreferences
+import com.example.data.local.UserPreferences
 import com.example.player.PlaybackUiState
+import com.example.player.TrackOption
 import com.example.ui.components.MediaThumbnail
 import com.example.ui.components.formatDuration
+import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.MonoMetricsStyle
+import com.example.ui.theme.PlusJakartaSansFontFamily
+import com.example.ui.theme.SpaceGroteskFontFamily
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.round
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -93,8 +138,13 @@ import kotlin.math.sin
 fun AudioPlayerScreen(
     playbackState: PlaybackUiState,
     currentMedia: MediaItemEntity?,
+    preferences: UserPreferences,
+    subtitleText: String,
+    likedSongs: List<MediaItemEntity>,
     onBack: () -> Unit,
     onOpenEqualizer: () -> Unit,
+    onOpenLikedSongsTab: () -> Unit,
+    onPlayLikedSong: (List<MediaItemEntity>, Int) -> Unit,
     onAddToPlaylist: (MediaItemEntity) -> Unit,
     onTogglePlayPause: () -> Unit,
     onSeekTo: (Long) -> Unit,
@@ -105,12 +155,74 @@ fun AudioPlayerScreen(
     onCycleRepeat: () -> Unit,
     onToggleLike: () -> Unit,
     onSetSpeed: (Float) -> Unit,
-    onSetSleepTimer: (Int?) -> Unit
+    onSetSleepTimer: (Int?) -> Unit,
+    onSelectSubtitleTrack: (TrackOption?) -> Unit,
+    onAttachExternalSubtitle: (Uri) -> Unit,
+    onUpdateSubtitlePrefs: ((SubtitlePreferences) -> SubtitlePreferences) -> Unit
 ) {
     var showQueueSheet by remember { mutableStateOf(false) }
     var showSpeedSheet by remember { mutableStateOf(false) }
+    var showLikedSongsSheet by remember { mutableStateOf(false) }
+    var showSubtitleSheet by remember { mutableStateOf(false) }
     var isScrubbing by remember { mutableStateOf(false) }
     var scrubPos by remember { mutableLongStateOf(0L) }
+
+    var dragOffsetY by remember { mutableFloatStateOf(0f) }
+    val dampedOffsetY by animateFloatAsState(
+        targetValue = (dragOffsetY * 0.22f).coerceIn(-56f, 56f),
+        label = "audioSwipeOffset"
+    )
+    val swipeThresholdPx = with(LocalDensity.current) { 72.dp.toPx() }
+
+    var likeFeedbackTick by remember { mutableIntStateOf(0) }
+    var likeFeedbackLiked by remember { mutableStateOf(false) }
+    var showLikeFeedback by remember { mutableStateOf(false) }
+
+    LaunchedEffect(likeFeedbackTick) {
+        if (likeFeedbackTick > 0) {
+            showLikeFeedback = true
+            delay(750L)
+            showLikeFeedback = false
+        }
+    }
+
+    val isRotatingArtwork = preferences.rotateAudioArtwork
+    val artworkShape = if (isRotatingArtwork) CircleShape else RoundedCornerShape(28.dp)
+    val artworkRotation = remember { Animatable(0f) }
+
+    LaunchedEffect(isRotatingArtwork) {
+        if (!isRotatingArtwork) {
+            artworkRotation.snapTo(0f)
+        }
+    }
+
+    LaunchedEffect(isRotatingArtwork, playbackState.isPlaying) {
+        if (isRotatingArtwork && playbackState.isPlaying) {
+            while (isActive) {
+                val start = artworkRotation.value % 360f
+                artworkRotation.snapTo(start)
+                artworkRotation.animateTo(
+                    targetValue = start + 360f,
+                    animationSpec = tween(durationMillis = 16_000, easing = LinearEasing)
+                )
+            }
+        }
+    }
+
+    fun executeSwipeAction(action: AudioSwipeAction) {
+        when (action) {
+            AudioSwipeAction.MINIMISE -> onBack()
+            AudioSwipeAction.OPEN_QUEUE -> showQueueSheet = true
+            AudioSwipeAction.OPEN_EQUALIZER -> onOpenEqualizer()
+            AudioSwipeAction.OPEN_LIKED_SONGS -> showLikedSongsSheet = true
+        }
+    }
+
+    val subtitleFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) onAttachExternalSubtitle(uri)
+    }
 
     val primaryColor = MaterialTheme.colorScheme.primary
     val secondaryColor = MaterialTheme.colorScheme.secondary
@@ -130,69 +242,151 @@ fun AudioPlayerScreen(
             )
             .statusBarsPadding()
             .navigationBarsPadding()
+            .pointerInput(preferences.audioSwipeDownAction, preferences.audioSwipeUpAction) {
+                detectVerticalDragGestures(
+                    onDragStart = { dragOffsetY = 0f },
+                    onDragCancel = { dragOffsetY = 0f },
+                    onDragEnd = {
+                        val delta = dragOffsetY
+                        dragOffsetY = 0f
+                        when {
+                            delta >= swipeThresholdPx -> executeSwipeAction(preferences.audioSwipeDownAction)
+                            delta <= -swipeThresholdPx -> executeSwipeAction(preferences.audioSwipeUpAction)
+                        }
+                    },
+                    onVerticalDrag = { _, dragAmount ->
+                        dragOffsetY += dragAmount
+                    }
+                )
+            }
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .widthIn(max = 560.dp)
                 .align(Alignment.Center)
+                .offset { IntOffset(0, dampedOffsetY.roundToInt()) }
                 .padding(horizontal = 24.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
             // Top Header
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                IconButton(
-                    onClick = onBack,
-                    modifier = Modifier.minimumInteractiveComponentSize()
-                ) {
-                    Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = "Collapse player")
-                }
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        text = "NOW PLAYING",
-                        style = MonoMetricsStyle,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    if (playbackState.formatBadge.isNotBlank()) {
-                        Text(
-                            text = playbackState.formatBadge,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-                IconButton(
-                    onClick = onOpenEqualizer,
+                Box(
                     modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .testTag("audio_player_eq_button")
+                        .width(38.dp)
+                        .height(4.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f))
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Icon(Icons.Rounded.GraphicEq, contentDescription = "Equalizer")
+                    IconButton(
+                        onClick = onBack,
+                        modifier = Modifier.minimumInteractiveComponentSize()
+                    ) {
+                        Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = "Collapse player")
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = "NOW PLAYING",
+                            style = MonoMetricsStyle,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        if (playbackState.formatBadge.isNotBlank()) {
+                            Text(
+                                text = playbackState.formatBadge,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    IconButton(
+                        onClick = onOpenEqualizer,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("audio_player_eq_button")
+                    ) {
+                        Icon(Icons.Rounded.GraphicEq, contentDescription = "Equalizer")
+                    }
                 }
             }
 
-            // Elevated Album Artwork
-            MediaThumbnail(
-                uri = playbackState.currentUri.orEmpty(),
-                isVideo = playbackState.isVideo,
-                isStream = playbackState.currentUri?.startsWith("http") == true,
-                contentDescription = playbackState.currentTitle,
-                shape = RoundedCornerShape(28.dp),
+            // Elevated Album Artwork with Configurable Double-Tap & Optional Vinyl Rotation
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth(0.76f)
+                    .fillMaxWidth(0.74f)
                     .aspectRatio(1f)
                     .shadow(
                         elevation = if (playbackState.isPlaying) 28.dp else 10.dp,
-                        shape = RoundedCornerShape(28.dp),
+                        shape = artworkShape,
                         ambientColor = primaryColor,
                         spotColor = secondaryColor
                     )
-            )
+                    .clip(artworkShape)
+                    .pointerInput(preferences.audioDoubleTapAction, currentMedia?.isLiked) {
+                        detectTapGestures(
+                            onDoubleTap = {
+                                when (preferences.audioDoubleTapAction) {
+                                    AudioDoubleTapAction.TOGGLE_LIKE -> {
+                                        val nextLiked = !(currentMedia?.isLiked ?: false)
+                                        likeFeedbackLiked = nextLiked
+                                        likeFeedbackTick++
+                                        onToggleLike()
+                                    }
+                                    AudioDoubleTapAction.OPEN_SUBTITLES -> {
+                                        showSubtitleSheet = true
+                                    }
+                                }
+                            }
+                        )
+                    }
+                    .testTag("audio_player_artwork"),
+                contentAlignment = Alignment.Center
+            ) {
+                MediaThumbnail(
+                    uri = playbackState.currentUri.orEmpty(),
+                    isVideo = playbackState.isVideo,
+                    isStream = playbackState.currentUri?.startsWith("http") == true,
+                    contentDescription = playbackState.currentTitle,
+                    shape = artworkShape,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            if (isRotatingArtwork) {
+                                rotationZ = artworkRotation.value
+                            }
+                        }
+                )
+
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = showLikeFeedback,
+                    enter = fadeIn() + scaleIn(initialScale = 0.75f),
+                    exit = fadeOut() + scaleOut(targetScale = 1.15f)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = Color.Black.copy(alpha = 0.65f),
+                        modifier = Modifier.size(72.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = if (likeFeedbackLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                                contentDescription = null,
+                                tint = if (likeFeedbackLiked) secondaryColor else Color.White,
+                                modifier = Modifier.size(38.dp)
+                            )
+                        }
+                    }
+                }
+            }
 
             // Reactive Studio Spectrum Visualizer
             ReactiveAudioVisualizer(
@@ -201,8 +395,19 @@ fun AudioPlayerScreen(
                 secondary = secondaryColor,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(34.dp)
+                    .height(30.dp)
             )
+
+            // Active Subtitle / Lyric Line (when subtitles enabled and text available)
+            AnimatedVisibility(visible = playbackState.subtitlesEnabled && subtitleText.isNotBlank()) {
+                AudioSubtitleBanner(
+                    text = subtitleText,
+                    prefs = preferences.subtitle,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showSubtitleSheet = true }
+                )
+            }
 
             // Track Info & Like Button
             Row(
@@ -275,16 +480,24 @@ fun AudioPlayerScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(
+                ModeTogglePillButton(
+                    active = playbackState.shuffleEnabled,
+                    activeContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                    activeBorderColor = primaryColor,
+                    activeContentColor = primaryColor,
+                    badgeLabel = if (playbackState.shuffleEnabled) "ON" else null,
+                    contentDescription = if (playbackState.shuffleEnabled) "Shuffle On" else "Shuffle Off",
                     onClick = onToggleShuffle,
-                    modifier = Modifier.minimumInteractiveComponentSize()
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Shuffle,
-                        contentDescription = "Shuffle",
-                        tint = if (playbackState.shuffleEnabled) primaryColor else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+                    testTag = "audio_player_shuffle_button",
+                    icon = { tint ->
+                        Icon(
+                            imageVector = Icons.Rounded.Shuffle,
+                            contentDescription = null,
+                            tint = tint,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                )
                 IconButton(
                     onClick = onSkipPrevious,
                     modifier = Modifier.size(54.dp)
@@ -313,24 +526,40 @@ fun AudioPlayerScreen(
                 ) {
                     Icon(Icons.Rounded.SkipNext, contentDescription = "Next", modifier = Modifier.size(34.dp))
                 }
-                IconButton(
-                    onClick = onCycleRepeat,
-                    modifier = Modifier.minimumInteractiveComponentSize()
-                ) {
-                    Icon(
-                        imageVector = if (playbackState.repeatMode == Player.REPEAT_MODE_ONE) {
-                            Icons.Rounded.RepeatOne
-                        } else {
-                            Icons.Rounded.Repeat
-                        },
-                        contentDescription = "Repeat mode",
-                        tint = if (playbackState.repeatMode != Player.REPEAT_MODE_OFF) {
-                            primaryColor
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        }
-                    )
+                val isRepeatOne = playbackState.repeatMode == Player.REPEAT_MODE_ONE
+                val isRepeatActive = playbackState.repeatMode != Player.REPEAT_MODE_OFF
+                val repeatAccent = if (isRepeatOne) secondaryColor else primaryColor
+                val repeatContainer = if (isRepeatOne) {
+                    MaterialTheme.colorScheme.secondaryContainer
+                } else {
+                    MaterialTheme.colorScheme.primaryContainer
                 }
+                ModeTogglePillButton(
+                    active = isRepeatActive,
+                    activeContainerColor = repeatContainer,
+                    activeBorderColor = repeatAccent,
+                    activeContentColor = repeatAccent,
+                    badgeLabel = when (playbackState.repeatMode) {
+                        Player.REPEAT_MODE_ALL -> "ALL"
+                        Player.REPEAT_MODE_ONE -> "1"
+                        else -> null
+                    },
+                    contentDescription = when (playbackState.repeatMode) {
+                        Player.REPEAT_MODE_ALL -> "Repeat All"
+                        Player.REPEAT_MODE_ONE -> "Repeat One"
+                        else -> "Repeat Off"
+                    },
+                    onClick = onCycleRepeat,
+                    testTag = "audio_player_repeat_button",
+                    icon = { tint ->
+                        Icon(
+                            imageVector = if (isRepeatOne) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
+                            contentDescription = null,
+                            tint = tint,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                )
             }
 
             // Quick Utility Strip
@@ -376,6 +605,20 @@ fun AudioPlayerScreen(
                             style = MonoMetricsStyle
                         )
                     }
+                }
+                IconButton(
+                    onClick = { showSubtitleSheet = true },
+                    modifier = Modifier.testTag("audio_player_subtitles_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Subtitles,
+                        contentDescription = "Subtitles",
+                        tint = if (playbackState.externalSubtitleUri != null && playbackState.subtitlesEnabled) {
+                            primaryColor
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
                 }
                 if (currentMedia != null) {
                     IconButton(onClick = { onAddToPlaylist(currentMedia) }) {
@@ -430,6 +673,93 @@ fun AudioPlayerScreen(
         }
     }
 
+    if (showLikedSongsSheet) {
+        ModalBottomSheet(onDismissRequest = { showLikedSongsSheet = false }) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Liked Songs (${likedSongs.size})",
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                    TextButton(
+                        onClick = {
+                            showLikedSongsSheet = false
+                            onOpenLikedSongsTab()
+                        }
+                    ) {
+                        Text("Open Library")
+                    }
+                }
+                if (likedSongs.isEmpty()) {
+                    Text(
+                        text = "No liked songs yet. Tap the heart icon or double-tap artwork to like a song.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 20.dp)
+                    )
+                } else {
+                    LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
+                        itemsIndexed(likedSongs, key = { _, item -> item.uri }) { index, item ->
+                            val active = item.uri == playbackState.currentUri
+                            ListItem(
+                                leadingContent = {
+                                    MediaThumbnail(
+                                        uri = item.uri,
+                                        isVideo = item.isVideo,
+                                        isStream = item.isStream,
+                                        contentDescription = item.title,
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.size(44.dp)
+                                    )
+                                },
+                                headlineContent = {
+                                    Text(
+                                        text = item.title,
+                                        fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (active) primaryColor else MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                },
+                                supportingContent = {
+                                    Text(item.artist, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                },
+                                trailingContent = {
+                                    if (item.durationMs > 0L) {
+                                        Text(formatDuration(item.durationMs), style = MonoMetricsStyle)
+                                    }
+                                },
+                                modifier = Modifier.clickable {
+                                    onPlayLikedSong(likedSongs, index)
+                                    showLikedSongsSheet = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showSubtitleSheet) {
+        AudioSubtitleConfigSheet(
+            playbackState = playbackState,
+            subtitlePrefs = preferences.subtitle,
+            onDismiss = { showSubtitleSheet = false },
+            onSelectSubtitleTrack = onSelectSubtitleTrack,
+            onPickExternalSubtitle = {
+                subtitleFileLauncher.launch(arrayOf("application/x-subrip", "text/vtt", "text/plain", "*/*"))
+            },
+            onUpdateSubtitlePrefs = onUpdateSubtitlePrefs
+        )
+    }
+
     if (showSpeedSheet) {
         ModalBottomSheet(onDismissRequest = { showSpeedSheet = false }) {
             Column(
@@ -446,7 +776,7 @@ fun AudioPlayerScreen(
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(listOf(0.5f, 0.8f, 1.0f, 1.25f, 1.5f, 2.0f)) { spd ->
                         FilterChip(
-                            selected = kotlin.math.abs(playbackState.playbackSpeed - spd) < 0.05f,
+                            selected = abs(playbackState.playbackSpeed - spd) < 0.05f,
                             onClick = { onSetSpeed(spd) },
                             label = { Text("${spd}x") }
                         )
@@ -459,6 +789,254 @@ fun AudioPlayerScreen(
                 )
                 Spacer(modifier = Modifier.height(16.dp))
             }
+        }
+    }
+}
+
+@Composable
+private fun ModeTogglePillButton(
+    active: Boolean,
+    activeContainerColor: Color,
+    activeBorderColor: Color,
+    activeContentColor: Color,
+    badgeLabel: String?,
+    contentDescription: String,
+    onClick: () -> Unit,
+    testTag: String,
+    icon: @Composable (Color) -> Unit
+) {
+    val tint = if (active) activeContentColor else MaterialTheme.colorScheme.onSurfaceVariant
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = if (active) activeContainerColor else Color.Transparent,
+        border = if (active) BorderStroke(1.dp, activeBorderColor.copy(alpha = 0.65f)) else null,
+        modifier = Modifier
+            .size(width = 54.dp, height = 52.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClickLabel = contentDescription, onClick = onClick)
+            .testTag(testTag)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            icon(tint)
+            if (active && badgeLabel != null) {
+                Spacer(modifier = Modifier.height(2.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(5.dp)
+                            .clip(CircleShape)
+                            .background(activeContentColor)
+                    )
+                    Text(
+                        text = badgeLabel,
+                        style = MonoMetricsStyle.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold),
+                        color = activeContentColor
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AudioSubtitleBanner(
+    text: String,
+    prefs: SubtitlePreferences,
+    modifier: Modifier = Modifier
+) {
+    val fontFamily = when (prefs.fontStyle) {
+        SubtitleFontStyle.SANS -> PlusJakartaSansFontFamily
+        SubtitleFontStyle.MONO -> JetBrainsMonoFontFamily
+        SubtitleFontStyle.DISPLAY -> SpaceGroteskFontFamily
+    }
+    val bgColor = when (prefs.edgeStyle) {
+        SubtitleEdgeStyle.BOXED -> Color.Black.copy(alpha = prefs.backgroundOpacity.coerceIn(0.15f, 0.95f))
+        SubtitleEdgeStyle.NONE -> MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.72f)
+        else -> MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f)
+    }
+    val shadow = when (prefs.edgeStyle) {
+        SubtitleEdgeStyle.DROP_SHADOW, SubtitleEdgeStyle.OUTLINE -> Shadow(
+            color = Color.Black.copy(alpha = 0.75f),
+            offset = Offset(1f, 1.5f),
+            blurRadius = 3f
+        )
+        else -> null
+    }
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = bgColor,
+        modifier = modifier
+    ) {
+        Text(
+            text = text,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            style = TextStyle(
+                fontFamily = fontFamily,
+                fontSize = prefs.fontSizeSp.coerceIn(12f, 22f).sp,
+                fontWeight = FontWeight.SemiBold,
+                color = if (prefs.edgeStyle == SubtitleEdgeStyle.BOXED) {
+                    Color(prefs.textColorHex)
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
+                shadow = shadow
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 6.dp)
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AudioSubtitleConfigSheet(
+    playbackState: PlaybackUiState,
+    subtitlePrefs: SubtitlePreferences,
+    onDismiss: () -> Unit,
+    onSelectSubtitleTrack: (TrackOption?) -> Unit,
+    onPickExternalSubtitle: () -> Unit,
+    onUpdateSubtitlePrefs: ((SubtitlePreferences) -> SubtitlePreferences) -> Unit
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        LazyColumn(
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Subtitles & Lyrics", style = MaterialTheme.typography.titleLarge)
+                    FilledTonalButton(onClick = onPickExternalSubtitle) {
+                        Icon(Icons.Rounded.UploadFile, contentDescription = null)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Load .srt/.vtt")
+                    }
+                }
+            }
+
+            item {
+                ListItem(
+                    headlineContent = { Text("Disable Subtitles") },
+                    leadingContent = {
+                        RadioButton(
+                            selected = !playbackState.subtitlesEnabled,
+                            onClick = { onSelectSubtitleTrack(null) }
+                        )
+                    },
+                    modifier = Modifier.clickable { onSelectSubtitleTrack(null) }
+                )
+            }
+
+            items(playbackState.subtitleTracks) { track ->
+                ListItem(
+                    headlineContent = { Text(track.label) },
+                    supportingContent = track.codec?.let { { Text(it) } },
+                    leadingContent = {
+                        RadioButton(
+                            selected = playbackState.subtitlesEnabled && track.isSelected,
+                            onClick = { onSelectSubtitleTrack(track) }
+                        )
+                    },
+                    modifier = Modifier.clickable { onSelectSubtitleTrack(track) }
+                )
+            }
+
+            if (playbackState.externalSubtitleUri != null) {
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "External subtitle loaded (${playbackState.externalCues.size} cues)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.padding(12.dp)
+                        )
+                    }
+                }
+            }
+
+            item {
+                Text("Font Size: ${subtitlePrefs.fontSizeSp.toInt()} sp", style = MaterialTheme.typography.labelLarge)
+                Slider(
+                    value = subtitlePrefs.fontSizeSp,
+                    onValueChange = { size -> onUpdateSubtitlePrefs { it.copy(fontSizeSp = size) } },
+                    valueRange = 12f..36f
+                )
+            }
+
+            item {
+                val delaySec = subtitlePrefs.syncDelayMs / 1000f
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Sync Delay: ${String.format(Locale.US, "%+.1fs", delaySec)}",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                    OutlinedButton(
+                        onClick = { onUpdateSubtitlePrefs { it.copy(syncDelayMs = 0L) } }
+                    ) {
+                        Text("Reset 0.0s")
+                    }
+                }
+                Slider(
+                    value = delaySec,
+                    onValueChange = { sec ->
+                        val snapped = (round(sec * 10f) / 10f)
+                        onUpdateSubtitlePrefs { it.copy(syncDelayMs = (snapped * 1000L).toLong()) }
+                    },
+                    valueRange = -5.0f..5.0f
+                )
+            }
+
+            item {
+                Text("Font Family", style = MaterialTheme.typography.labelLarge)
+                Spacer(modifier = Modifier.height(6.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(SubtitleFontStyle.entries) { style ->
+                        FilterChip(
+                            selected = subtitlePrefs.fontStyle == style,
+                            onClick = { onUpdateSubtitlePrefs { it.copy(fontStyle = style) } },
+                            label = { Text(style.label) }
+                        )
+                    }
+                }
+            }
+
+            item {
+                Text("Edge & Background", style = MaterialTheme.typography.labelLarge)
+                Spacer(modifier = Modifier.height(6.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(SubtitleEdgeStyle.entries) { edge ->
+                        FilterChip(
+                            selected = subtitlePrefs.edgeStyle == edge,
+                            onClick = { onUpdateSubtitlePrefs { it.copy(edgeStyle = edge) } },
+                            label = { Text(edge.label) }
+                        )
+                    }
+                }
+            }
+
+            item { Spacer(modifier = Modifier.height(16.dp)) }
         }
     }
 }
@@ -490,7 +1068,7 @@ private fun ReactiveAudioVisualizer(
         for (i in 0 until barCount) {
             val amp = if (isPlaying) {
                 val wave = sin(phase + i * 0.45f) * 0.4f + sin(phase * 1.7f - i * 0.25f) * 0.35f
-                (0.28f + kotlin.math.abs(wave)).coerceIn(0.15f, 1.0f)
+                (0.28f + abs(wave)).coerceIn(0.15f, 1.0f)
             } else {
                 0.14f
             }

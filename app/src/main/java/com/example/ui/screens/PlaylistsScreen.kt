@@ -80,7 +80,9 @@ fun PlaylistsScreen(
         containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background.copy(alpha = 0.94f)
+                ),
                 title = {
                     Column {
                         Text("Playlists", style = MaterialTheme.typography.headlineMedium)
@@ -235,11 +237,15 @@ private fun LikedSmartPlaylistCard(
                     }
                     Spacer(modifier = Modifier.width(14.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("Liked Media & Songs", style = MaterialTheme.typography.titleLarge)
+                        Text(
+                            text = "Liked Media & Songs",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
                         Text(
                             text = "${likedItems.size} favorites synced locally",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.78f)
                         )
                     }
                 }

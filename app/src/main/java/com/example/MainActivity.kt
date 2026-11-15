@@ -5,8 +5,10 @@ import android.app.PictureInPictureParams
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -36,9 +38,12 @@ import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.rounded.Audiotrack
 import androidx.compose.material.icons.rounded.Movie
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
@@ -46,13 +51,14 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -60,6 +66,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hasRoute
@@ -70,6 +79,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.example.data.local.MediaItemEntity
+import com.example.data.repository.MediaRepository
 import com.example.ui.components.AddToPlaylistSheet
 import com.example.ui.components.FloatingMiniVideoOverlay
 import com.example.ui.components.MiniPlayerBar
@@ -93,6 +103,7 @@ import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.VideoPlayerScreen
 import com.example.ui.screens.VideosScreen
 import com.example.ui.theme.AetherPlayTheme
+import com.example.ui.viewmodel.AudioFilterTab
 import com.example.ui.viewmodel.EqualizerViewModel
 import com.example.ui.viewmodel.LibraryViewModel
 import com.example.ui.viewmodel.PlayerViewModel
@@ -109,7 +120,7 @@ private data class TopLevelDestination(
 
 class MainActivity : ComponentActivity() {
 
-    private val incomingUriFlow = MutableStateFlow<android.net.Uri?>(null)
+    private val incomingUriFlow = MutableStateFlow<Uri?>(null)
     private var isInPipState by mutableStateOf(false)
     private var canAutoEnterPip = false
 
@@ -161,7 +172,8 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIncomingIntent(intent: Intent?) {
         if (intent?.action == Intent.ACTION_VIEW) {
-            intent.data?.let { uri ->
+            val uri = runCatching { intent.data }.getOrNull() ?: return
+            if (com.example.player.MediaSafety.isSafeExternalMediaUri(this, uri)) {
                 incomingUriFlow.value = uri
             }
         }
@@ -203,7 +215,7 @@ private fun AetherPlayRoot(
     playerViewModel: PlayerViewModel,
     equalizerViewModel: EqualizerViewModel,
     settingsViewModel: SettingsViewModel,
-    incomingUri: android.net.Uri?,
+    incomingUri: Uri?,
     onConsumeIncomingUri: () -> Unit,
     isInPipMode: Boolean,
     onUpdateAutoPipEligibility: (Boolean) -> Unit,
@@ -225,6 +237,62 @@ private fun AetherPlayRoot(
     var showStreamDialog by remember { mutableStateOf(false) }
     var playlistTargetMedia by remember { mutableStateOf<MediaItemEntity?>(null) }
     var isFloatingVideoMode by remember { mutableStateOf(false) }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var hasStoragePermission by remember { mutableStateOf(MediaRepository.hasAllFilesPermission(context)) }
+    var hasAutoScannedThisSession by remember { mutableStateOf(false) }
+    var showManageFilesPrompt by remember {
+        mutableStateOf(Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !hasStoragePermission)
+    }
+
+    val legacyStoragePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasStoragePermission = MediaRepository.hasAllFilesPermission(context)
+        if (granted) {
+            hasAutoScannedThisSession = true
+            libraryViewModel.scanDeviceMedia(showSummaryBanner = true)
+        }
+    }
+
+    fun requestManageAllFilesPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val appIntent = Intent(
+                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                Uri.parse("package:${context.packageName}")
+            )
+            val fallbackIntent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+            runCatching { context.startActivity(appIntent) }
+                .onFailure { runCatching { context.startActivity(fallbackIntent) } }
+        } else {
+            legacyStoragePermissionLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R && !hasStoragePermission) {
+            legacyStoragePermissionLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val nowGranted = MediaRepository.hasAllFilesPermission(context)
+                val becameGranted = !hasStoragePermission && nowGranted
+                hasStoragePermission = nowGranted
+                if (nowGranted) {
+                    showManageFilesPrompt = false
+                    if (!hasAutoScannedThisSession || becameGranted) {
+                        hasAutoScannedThisSession = true
+                        libraryViewModel.scanDeviceMedia(showSummaryBanner = becameGranted)
+                    }
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     LaunchedEffect(playbackState.isVideo, playbackState.hasMedia) {
         if (!playbackState.isVideo || !playbackState.hasMedia) {
@@ -384,10 +452,11 @@ private fun AetherPlayRoot(
                 snackbarHost = { SnackbarHost(snackbarHostState) },
                 bottomBar = {
                     if (!isFullScreenPlayer && !isInPipMode) {
+                        val showBottomNav = !useRail && isTopLevelTab
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .navigationBarsPadding()
+                                .then(if (showBottomNav) Modifier else Modifier.navigationBarsPadding())
                         ) {
                             MiniPlayerBar(
                                 playbackState = playbackState,
@@ -409,10 +478,10 @@ private fun AetherPlayRoot(
                                     playerViewModel.stopAndClear()
                                 }
                             )
-                            if (!useRail && isTopLevelTab) {
+                            if (showBottomNav) {
                                 NavigationBar(
                                     containerColor = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.96f),
-                                    windowInsets = WindowInsets(0, 0, 0, 0)
+                                    windowInsets = NavigationBarDefaults.windowInsets
                                 ) {
                                     destinations.forEach { dest ->
                                         val selected = currentDest?.hasRoute(dest.route::class) == true
@@ -448,11 +517,16 @@ private fun AetherPlayRoot(
                             VideosScreen(
                                 uiState = libraryState,
                                 isGridMode = preferences.videoGridMode,
+                                isFolderView = preferences.videoFolderView,
+                                hasStoragePermission = hasStoragePermission,
                                 currentPlayingUri = playbackState.currentUri,
                                 onSearchChange = libraryViewModel::setSearchQuery,
-                                onSelectFolder = libraryViewModel::setSelectedFolder,
+                                onSelectFolderKey = libraryViewModel::setSelectedVideoFolderKey,
                                 onSelectSort = libraryViewModel::setSortOrder,
                                 onToggleGridMode = libraryViewModel::toggleVideoGridMode,
+                                onToggleFolderView = libraryViewModel::toggleVideoFolderView,
+                                onRescanDevice = { libraryViewModel.scanDeviceMedia(showSummaryBanner = true) },
+                                onRequestStoragePermission = { requestManageAllFilesPermission() },
                                 onPlayVideo = { items, idx ->
                                     ensureNotificationPermission()
                                     libraryViewModel.playMediaQueue(items, idx)
@@ -477,9 +551,15 @@ private fun AetherPlayRoot(
                         composable<AudioRoute> {
                             AudioScreen(
                                 uiState = libraryState,
+                                isFolderView = preferences.audioFolderView,
+                                hasStoragePermission = hasStoragePermission,
                                 currentPlayingUri = playbackState.currentUri,
                                 onSearchChange = libraryViewModel::setSearchQuery,
                                 onSelectFilter = libraryViewModel::setAudioFilter,
+                                onSelectFolderKey = libraryViewModel::setSelectedAudioFolderKey,
+                                onToggleFolderView = libraryViewModel::toggleAudioFolderView,
+                                onRescanDevice = { libraryViewModel.scanDeviceMedia(showSummaryBanner = true) },
+                                onRequestStoragePermission = { requestManageAllFilesPermission() },
                                 onPlayAudio = { items, idx ->
                                     ensureNotificationPermission()
                                     libraryViewModel.playMediaQueue(items, idx)
@@ -588,6 +668,10 @@ private fun AetherPlayRoot(
                                 onSetResumePlayback = settingsViewModel::setResumePlayback,
                                 onSetBackgroundVideoAudio = settingsViewModel::setBackgroundVideoAudio,
                                 onSetAutoPip = settingsViewModel::setAutoPip,
+                                onSetRotateAudioArtwork = settingsViewModel::setRotateAudioArtwork,
+                                onSetAudioSwipeDownAction = settingsViewModel::setAudioSwipeDownAction,
+                                onSetAudioSwipeUpAction = settingsViewModel::setAudioSwipeUpAction,
+                                onSetAudioDoubleTapAction = settingsViewModel::setAudioDoubleTapAction,
                                 onUpdateSubtitlePrefs = settingsViewModel::updateSubtitlePreferences,
                                 onOpenEqualizer = {
                                     navController.navigate(EqualizerRoute) { launchSingleTop = true }
@@ -655,12 +739,33 @@ private fun AetherPlayRoot(
                         }
 
                         composable<AudioPlayerRoute> {
+                            val subText = playerViewModel.resolveVisibleSubtitles(playbackState, preferences.subtitle)
+                            val likedAudioSongs = remember(libraryState.likedItems) {
+                                libraryState.likedItems.filter { !it.isVideo }
+                            }
                             AudioPlayerScreen(
                                 playbackState = playbackState,
                                 currentMedia = currentMedia,
+                                preferences = preferences,
+                                subtitleText = subText,
+                                likedSongs = likedAudioSongs,
                                 onBack = { navController.popBackStack() },
                                 onOpenEqualizer = {
                                     navController.navigate(EqualizerRoute) { launchSingleTop = true }
+                                },
+                                onOpenLikedSongsTab = {
+                                    libraryViewModel.setAudioFilter(AudioFilterTab.LIKED)
+                                    navController.navigate(AudioRoute) {
+                                        popUpTo(navController.graph.findStartDestination().id) {
+                                            saveState = true
+                                        }
+                                        launchSingleTop = true
+                                        restoreState = true
+                                    }
+                                },
+                                onPlayLikedSong = { items, idx ->
+                                    ensureNotificationPermission()
+                                    libraryViewModel.playMediaQueue(items, idx)
                                 },
                                 onAddToPlaylist = { playlistTargetMedia = it },
                                 onTogglePlayPause = playerViewModel::togglePlayPause,
@@ -672,20 +777,33 @@ private fun AetherPlayRoot(
                                 onCycleRepeat = playerViewModel::cycleRepeat,
                                 onToggleLike = playerViewModel::toggleCurrentLike,
                                 onSetSpeed = playerViewModel::setSpeed,
-                                onSetSleepTimer = playerViewModel::setSleepTimer
+                                onSetSleepTimer = playerViewModel::setSleepTimer,
+                                onSelectSubtitleTrack = playerViewModel::selectSubtitleTrack,
+                                onAttachExternalSubtitle = playerViewModel::attachExternalSubtitle,
+                                onUpdateSubtitlePrefs = playerViewModel::updateSubtitlePreferences
                             )
                         }
 
                         composable<EqualizerRoute> {
+                            val customProfiles by equalizerViewModel.customProfiles.collectAsStateWithLifecycle()
                             EqualizerScreen(
                                 uiState = eqState,
+                                customProfiles = customProfiles,
+                                isAudioPlaying = playbackState.isPlaying,
+                                activeMediaTitle = playbackState.currentTitle.takeIf {
+                                    playbackState.hasMedia && it.isNotBlank()
+                                },
                                 onBack = { navController.popBackStack() },
                                 onSetEnabled = equalizerViewModel::setEnabled,
                                 onSelectPreset = equalizerViewModel::applyPreset,
+                                onSelectCustomProfile = equalizerViewModel::applyCustomProfile,
                                 onBandLevelChange = equalizerViewModel::setBandLevel,
+                                onResetBand = equalizerViewModel::resetBand,
                                 onBassBoostChange = equalizerViewModel::setBassBoost,
                                 onVirtualizerChange = equalizerViewModel::setVirtualizer,
                                 onLoudnessChange = equalizerViewModel::setLoudnessGain,
+                                onSaveCustomProfile = equalizerViewModel::saveCustomProfile,
+                                onDeleteCustomProfile = equalizerViewModel::deleteCustomProfile,
                                 onReset = equalizerViewModel::reset
                             )
                         }
@@ -707,6 +825,37 @@ private fun AetherPlayRoot(
             onDismiss = {
                 isFloatingVideoMode = false
                 playerViewModel.stopAndClear()
+            }
+        )
+    }
+
+    if (showManageFilesPrompt && !hasStoragePermission) {
+        AlertDialog(
+            onDismissRequest = { showManageFilesPrompt = false },
+            title = { Text("Allow All Files Access") },
+            text = {
+                Text(
+                    "Grant permission to manage all files on your device so AetherPlay can automatically scan and organize all your video and audio folders."
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showManageFilesPrompt = false
+                        requestManageAllFilesPermission()
+                    },
+                    modifier = Modifier.testTag("manage_files_allow_button")
+                ) {
+                    Text("Allow")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showManageFilesPrompt = false },
+                    modifier = Modifier.testTag("manage_files_later_button")
+                ) {
+                    Text("Not Now")
+                }
             }
         )
     }
