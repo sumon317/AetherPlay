@@ -70,7 +70,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -949,66 +948,77 @@ private fun VideoListRow(
             }
         )
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(10.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Box(
-                modifier = Modifier
-                    .width(126.dp)
-                    .aspectRatio(16f / 9f)
+            Text(
+                text = video.title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = if (isPlayingNow) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                MediaThumbnail(
-                    uri = video.uri,
-                    isVideo = true,
-                    isStream = video.isStream,
-                    contentDescription = video.title,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxSize()
-                )
-                if (video.durationMs > 0L) {
-                    Surface(
-                        color = Color.Black.copy(alpha = 0.74f),
-                        shape = RoundedCornerShape(6.dp),
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(5.dp)
-                    ) {
-                        Text(
-                            text = formatDuration(video.durationMs),
-                            style = MonoMetricsStyle,
-                            color = Color.White,
-                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                Box(
+                    modifier = Modifier
+                        .width(88.dp)
+                        .aspectRatio(16f / 9f)
+                ) {
+                    MediaThumbnail(
+                        uri = video.uri,
+                        isVideo = true,
+                        isStream = video.isStream,
+                        contentDescription = video.title,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    if (video.durationMs > 0L) {
+                        Surface(
+                            color = Color.Black.copy(alpha = 0.74f),
+                            shape = RoundedCornerShape(5.dp),
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(4.dp)
+                        ) {
+                            Text(
+                                text = formatDuration(video.durationMs),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
+                    if (progress > 0f) {
+                        LinearProgressIndicator(
+                            progress = { progress },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(2.5.dp)
+                                .align(Alignment.BottomCenter)
+                                .clip(RoundedCornerShape(bottomStart = 10.dp, bottomEnd = 10.dp)),
+                            color = MaterialTheme.colorScheme.primary,
+                            trackColor = Color.White.copy(alpha = 0.2f)
                         )
                     }
                 }
-                if (progress > 0f) {
-                    LinearProgressIndicator(
-                        progress = { progress },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(2.5.dp)
-                            .align(Alignment.BottomCenter)
-                            .clip(RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp)),
-                        color = MaterialTheme.colorScheme.primary,
-                        trackColor = Color.White.copy(alpha = 0.2f)
-                    )
+                Spacer(modifier = Modifier.width(10.dp))
+                val sizeStr = formatFileSize(video.fileSizeBytes)
+                val metaText = when {
+                    sizeStr.isNotEmpty() -> sizeStr
+                    video.isStream -> "Stream"
+                    else -> video.folderName
                 }
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = video.title,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(modifier = Modifier.height(4.dp))
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (resBadge.isNotEmpty()) {
@@ -1024,42 +1034,49 @@ private fun VideoListRow(
                             )
                         }
                     }
-                    Text(
-                        text = listOf(video.folderName, formatFileSize(video.fileSizeBytes))
-                            .filter { it.isNotBlank() }
-                            .joinToString(" • "),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    if (metaText.isNotBlank()) {
+                        Text(
+                            text = metaText,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
-            }
-            IconButton(
-                onClick = onToggleLike,
-                modifier = Modifier.minimumInteractiveComponentSize()
-            ) {
-                Icon(
-                    imageVector = if (video.isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                    contentDescription = "Favorite",
-                    tint = if (video.isLiked) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Box {
-                IconButton(
-                    onClick = { menuOpen = true },
-                    modifier = Modifier.minimumInteractiveComponentSize()
-                ) {
-                    Icon(Icons.Rounded.MoreVert, contentDescription = "More options")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = onToggleLike,
+                        modifier = Modifier.size(38.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (video.isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                            contentDescription = "Favorite",
+                            tint = if (video.isLiked) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Box {
+                        IconButton(
+                            onClick = { menuOpen = true },
+                            modifier = Modifier.size(38.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.MoreVert,
+                                contentDescription = "More options",
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        VideoActionMenu(
+                            expanded = menuOpen,
+                            isLiked = video.isLiked,
+                            onDismiss = { menuOpen = false },
+                            onToggleLike = onToggleLike,
+                            onAddToPlaylist = onAddToPlaylist,
+                            onDelete = onDelete
+                        )
+                    }
                 }
-                VideoActionMenu(
-                    expanded = menuOpen,
-                    isLiked = video.isLiked,
-                    onDismiss = { menuOpen = false },
-                    onToggleLike = onToggleLike,
-                    onAddToPlaylist = onAddToPlaylist,
-                    onDelete = onDelete
-                )
             }
         }
     }
