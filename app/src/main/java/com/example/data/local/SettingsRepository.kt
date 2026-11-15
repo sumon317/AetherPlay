@@ -12,8 +12,22 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "aetherplay_settings")
+
+@Serializable
+data class CustomEqualizerProfile(
+    val id: String,
+    val name: String,
+    val bandLevelsMb: List<Int>,
+    val bassBoost: Int = 0,
+    val virtualizer: Int = 0,
+    val loudnessGainMb: Int = 0,
+    val createdAt: Long = System.currentTimeMillis()
+)
 
 enum class ThemeMode(val label: String) {
     DARK("Obsidian Dark"),
@@ -99,6 +113,15 @@ class SettingsRepository(private val context: Context) {
         val SUB_EDGE_STYLE = stringPreferencesKey("sub_edge_style")
         val SUB_BOTTOM_MARGIN = floatPreferencesKey("sub_bottom_margin")
         val SUB_DELAY_MS = longPreferencesKey("sub_delay_ms")
+        val CUSTOM_EQ_PROFILES = stringPreferencesKey("custom_eq_profiles_json")
+    }
+
+    private val profileJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+    val customEqualizerProfilesFlow: Flow<List<CustomEqualizerProfile>> = context.dataStore.data.map { prefs ->
+        val raw = prefs[Keys.CUSTOM_EQ_PROFILES] ?: return@map emptyList()
+        runCatching { profileJson.decodeFromString<List<CustomEqualizerProfile>>(raw) }
+            .getOrDefault(emptyList())
     }
 
     val preferencesFlow: Flow<UserPreferences> = context.dataStore.data.map { prefs ->
@@ -243,6 +266,35 @@ class SettingsRepository(private val context: Context) {
             prefs[Keys.SUB_EDGE_STYLE] = updated.edgeStyle.name
             prefs[Keys.SUB_BOTTOM_MARGIN] = updated.bottomMarginDp
             prefs[Keys.SUB_DELAY_MS] = updated.syncDelayMs
+        }
+    }
+
+    suspend fun saveCustomEqualizerProfile(profile: CustomEqualizerProfile) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.CUSTOM_EQ_PROFILES]?.let { raw ->
+                runCatching { profileJson.decodeFromString<List<CustomEqualizerProfile>>(raw) }
+                    .getOrNull()
+            } ?: emptyList()
+
+            val updated = buildList {
+                add(profile)
+                current.filterNot {
+                    it.id == profile.id || it.name.equals(profile.name, ignoreCase = true)
+                }.forEach { add(it) }
+            }
+            prefs[Keys.CUSTOM_EQ_PROFILES] = profileJson.encodeToString(updated)
+        }
+    }
+
+    suspend fun deleteCustomEqualizerProfile(profileId: String) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.CUSTOM_EQ_PROFILES]?.let { raw ->
+                runCatching { profileJson.decodeFromString<List<CustomEqualizerProfile>>(raw) }
+                    .getOrNull()
+            } ?: emptyList()
+
+            val updated = current.filterNot { it.id == profileId }
+            prefs[Keys.CUSTOM_EQ_PROFILES] = profileJson.encodeToString(updated)
         }
     }
 }
