@@ -46,7 +46,7 @@ class MediaPlayerCoreTest {
         val defaults = UserPreferences()
         assertTrue(defaults.videoFolderView)
         assertTrue(defaults.audioFolderView)
-        assertFalse(defaults.rotateAudioArtwork)
+        assertTrue(defaults.rotateAudioArtwork)
         assertEquals(AudioSwipeAction.MINIMISE, defaults.audioSwipeDownAction)
         assertEquals(AudioSwipeAction.OPEN_QUEUE, defaults.audioSwipeUpAction)
         assertEquals(AudioDoubleTapAction.TOGGLE_LIKE, defaults.audioDoubleTapAction)

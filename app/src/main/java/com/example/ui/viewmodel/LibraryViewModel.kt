@@ -86,7 +86,7 @@ class LibraryViewModel(
     private val statusBanner = MutableStateFlow<String?>(null)
 
     val preferences: StateFlow<UserPreferences> = settingsRepository.preferencesFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UserPreferences())
+        .stateIn(viewModelScope, SharingStarted.Eagerly, UserPreferences())
 
     private val libraryInputs = combine(
         mediaRepository.videosFlow,
@@ -211,22 +211,20 @@ class LibraryViewModel(
 
     fun toggleVideoGridMode() {
         viewModelScope.launch {
-            settingsRepository.setVideoGridMode(!preferences.value.videoGridMode)
+            settingsRepository.toggleVideoGridMode()
         }
     }
 
     fun toggleVideoFolderView() {
         viewModelScope.launch {
-            val next = !preferences.value.videoFolderView
-            settingsRepository.setVideoFolderView(next)
+            val next = settingsRepository.toggleVideoFolderView()
             if (!next) selectedVideoFolderKey.value = null
         }
     }
 
     fun toggleAudioFolderView() {
         viewModelScope.launch {
-            val next = !preferences.value.audioFolderView
-            settingsRepository.setAudioFolderView(next)
+            val next = settingsRepository.toggleAudioFolderView()
             if (!next) selectedAudioFolderKey.value = null
         }
     }

@@ -96,7 +96,7 @@ data class UserPreferences(
     val videoGridMode: Boolean = false,
     val videoFolderView: Boolean = true,
     val audioFolderView: Boolean = true,
-    val rotateAudioArtwork: Boolean = false,
+    val rotateAudioArtwork: Boolean = true,
     val audioSwipeDownAction: AudioSwipeAction = AudioSwipeAction.MINIMISE,
     val audioSwipeUpAction: AudioSwipeAction = AudioSwipeAction.OPEN_QUEUE,
     val audioDoubleTapAction: AudioDoubleTapAction = AudioDoubleTapAction.TOGGLE_LIKE,
@@ -171,7 +171,7 @@ class SettingsRepository(private val context: Context) {
             videoGridMode = prefs[Keys.VIDEO_GRID_MODE] ?: false,
             videoFolderView = prefs[Keys.VIDEO_FOLDER_VIEW] ?: true,
             audioFolderView = prefs[Keys.AUDIO_FOLDER_VIEW] ?: true,
-            rotateAudioArtwork = prefs[Keys.ROTATE_AUDIO_ARTWORK] ?: false,
+            rotateAudioArtwork = prefs[Keys.ROTATE_AUDIO_ARTWORK] ?: true,
             audioSwipeDownAction = prefs[Keys.AUDIO_SWIPE_DOWN_ACTION]?.let {
                 runCatching { AudioSwipeAction.valueOf(it) }.getOrNull()
             } ?: AudioSwipeAction.MINIMISE,
@@ -279,12 +279,42 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[Keys.VIDEO_GRID_MODE] = grid }
     }
 
+    suspend fun toggleVideoGridMode(): Boolean {
+        var next = false
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.VIDEO_GRID_MODE] ?: false
+            next = !current
+            prefs[Keys.VIDEO_GRID_MODE] = next
+        }
+        return next
+    }
+
     suspend fun setVideoFolderView(folderView: Boolean) {
         context.dataStore.edit { it[Keys.VIDEO_FOLDER_VIEW] = folderView }
     }
 
+    suspend fun toggleVideoFolderView(): Boolean {
+        var next = true
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.VIDEO_FOLDER_VIEW] ?: true
+            next = !current
+            prefs[Keys.VIDEO_FOLDER_VIEW] = next
+        }
+        return next
+    }
+
     suspend fun setAudioFolderView(folderView: Boolean) {
         context.dataStore.edit { it[Keys.AUDIO_FOLDER_VIEW] = folderView }
+    }
+
+    suspend fun toggleAudioFolderView(): Boolean {
+        var next = true
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.AUDIO_FOLDER_VIEW] ?: true
+            next = !current
+            prefs[Keys.AUDIO_FOLDER_VIEW] = next
+        }
+        return next
     }
 
     suspend fun setRotateAudioArtwork(rotate: Boolean) {

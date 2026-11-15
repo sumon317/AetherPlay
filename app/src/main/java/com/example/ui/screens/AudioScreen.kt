@@ -142,39 +142,19 @@ fun AudioScreen(
                 },
                 title = {
                     if (activeFolder != null) {
-                        Column {
-                            Text(
-                                text = activeFolder.name,
-                                style = MaterialTheme.typography.headlineSmall,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = "${uiState.audioTracks.size} ${if (uiState.audioTracks.size == 1) "track" else "tracks"} • ${activeFolder.pathLabel}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
+                        Text(
+                            text = activeFolder.name,
+                            style = MaterialTheme.typography.titleLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     } else {
-                        Column {
-                            Text("Audio Studio", style = MaterialTheme.typography.headlineMedium)
-                            val subtitle = when {
-                                isFolderView && uiState.audioFilter == AudioFilterTab.ALL && uiState.audioFolders.isNotEmpty() ->
-                                    "${uiState.audioFolders.size} ${if (uiState.audioFolders.size == 1) "folder" else "folders"} • ${uiState.allAudioCount} tracks"
-                                uiState.audioTracks.isNotEmpty() ->
-                                    "${uiState.audioTracks.size} tracks • Hi-Res Ready"
-                                else -> null
-                            }
-                            if (subtitle != null) {
-                                Text(
-                                    text = subtitle,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
+                        Text(
+                            text = "Audio",
+                            style = MaterialTheme.typography.titleLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 },
                 actions = {
@@ -219,8 +199,8 @@ fun AudioScreen(
             Box {
                 FloatingActionButton(
                     onClick = { showImportMenu = true },
-                    containerColor = MaterialTheme.colorScheme.secondary,
-                    contentColor = MaterialTheme.colorScheme.onSecondary,
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
                     modifier = Modifier.testTag("audio_import_fab")
                 ) {
                     Icon(Icons.Rounded.Add, contentDescription = "Import audio")
@@ -265,7 +245,7 @@ fun AudioScreen(
             if (uiState.isScanning) {
                 LinearProgressIndicator(
                     modifier = Modifier.fillMaxWidth(),
-                    color = MaterialTheme.colorScheme.secondary
+                    color = MaterialTheme.colorScheme.primary
                 )
             }
 
@@ -466,7 +446,7 @@ private fun AudioFolderRow(
                 Text(
                     text = listOf(countLabel, durationLabel).filter { it.isNotBlank() }.joinToString(" • "),
                     style = MonoMetricsStyle,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1
                 )
             }

@@ -125,6 +125,7 @@ fun VideosScreen(
 ) {
     var showSearch by remember { mutableStateOf(false) }
     var showSortMenu by remember { mutableStateOf(false) }
+    var showOverflowMenu by remember { mutableStateOf(false) }
     var showImportMenu by remember { mutableStateOf(false) }
 
     val activeFolder = uiState.activeVideoFolder
@@ -154,39 +155,12 @@ fun VideosScreen(
                 },
                 title = {
                     if (activeFolder != null) {
-                        Column {
-                            Text(
-                                text = activeFolder.name,
-                                style = MaterialTheme.typography.headlineSmall,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = "${uiState.videos.size} ${if (uiState.videos.size == 1) "video" else "videos"} • ${activeFolder.pathLabel}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    } else {
-                        Column {
-                            Text("Videos", style = MaterialTheme.typography.headlineMedium)
-                            val subtitle = when {
-                                isFolderView && uiState.videoFolders.isNotEmpty() ->
-                                    "${uiState.videoFolders.size} ${if (uiState.videoFolders.size == 1) "folder" else "folders"} • ${uiState.allVideosCount} titles"
-                                uiState.videos.isNotEmpty() ->
-                                    "${uiState.videos.size} titles • Hardware Ready"
-                                else -> null
-                            }
-                            if (subtitle != null) {
-                                Text(
-                                    text = subtitle,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
+                        Text(
+                            text = activeFolder.name,
+                            style = MaterialTheme.typography.titleLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 },
                 actions = {
@@ -206,7 +180,12 @@ fun VideosScreen(
                         ) {
                             Icon(
                                 imageVector = if (isFolderView) Icons.Rounded.VideoLibrary else Icons.Rounded.Folder,
-                                contentDescription = if (isFolderView) "Switch to all videos" else "Switch to folder view"
+                                contentDescription = if (isFolderView) "Switch to all videos" else "Switch to folder view",
+                                tint = if (isFolderView) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                }
                             )
                         }
                     }
@@ -216,16 +195,13 @@ fun VideosScreen(
                     ) {
                         Icon(
                             imageVector = if (isGridMode) Icons.AutoMirrored.Rounded.ViewList else Icons.Rounded.GridView,
-                            contentDescription = "Toggle grid or list"
+                            contentDescription = if (isGridMode) "Switch to list view" else "Switch to grid view",
+                            tint = if (isGridMode) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            }
                         )
-                    }
-                    IconButton(
-                        onClick = {
-                            if (hasStoragePermission) onRescanDevice() else onRequestStoragePermission()
-                        },
-                        modifier = Modifier.testTag("videos_rescan_button")
-                    ) {
-                        Icon(Icons.Rounded.Refresh, contentDescription = "Rescan device videos")
                     }
                     Box {
                         IconButton(onClick = { showSortMenu = true }) {
@@ -246,11 +222,34 @@ fun VideosScreen(
                             }
                         }
                     }
-                    IconButton(
-                        onClick = onOpenStreamDialog,
-                        modifier = Modifier.testTag("open_stream_button")
-                    ) {
-                        Icon(Icons.Rounded.Link, contentDescription = "Open stream URL")
+                    Box {
+                        IconButton(
+                            onClick = { showOverflowMenu = true },
+                            modifier = Modifier.testTag("videos_more_button")
+                        ) {
+                            Icon(Icons.Rounded.MoreVert, contentDescription = "More options")
+                        }
+                        DropdownMenu(
+                            expanded = showOverflowMenu,
+                            onDismissRequest = { showOverflowMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Rescan Device Storage") },
+                                leadingIcon = { Icon(Icons.Rounded.Refresh, contentDescription = null) },
+                                onClick = {
+                                    showOverflowMenu = false
+                                    if (hasStoragePermission) onRescanDevice() else onRequestStoragePermission()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Open Stream URL") },
+                                leadingIcon = { Icon(Icons.Rounded.Link, contentDescription = null) },
+                                onClick = {
+                                    showOverflowMenu = false
+                                    onOpenStreamDialog()
+                                }
+                            )
+                        }
                     }
                 }
             )
@@ -372,7 +371,7 @@ fun VideosScreen(
                     )
                 } else if (isGridMode) {
                     LazyVerticalGrid(
-                        columns = GridCells.Adaptive(minSize = 172.dp),
+                        columns = GridCells.Adaptive(minSize = 148.dp),
                         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 112.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -622,7 +621,7 @@ private fun VideoFolderListRow(
                 Text(
                     text = listOf(countStr, sizeStr).filter { it.isNotBlank() }.joinToString(" • "),
                     style = MonoMetricsStyle,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1
                 )
             }

@@ -249,7 +249,7 @@ private fun GestureZoneDiagramCard(preferences: UserPreferences) {
                     .fillMaxWidth()
                     .height(106.dp)
                     .clip(RoundedCornerShape(14.dp))
-                    .background(Color(0xFF0A0E17)),
+                    .background(MaterialTheme.colorScheme.surfaceContainerLowest),
                 horizontalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 Box(

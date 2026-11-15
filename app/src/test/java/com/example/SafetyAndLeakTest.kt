@@ -4,12 +4,15 @@ import android.content.Context
 import android.content.pm.PackageInfo
 import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
+import com.example.data.local.SettingsRepository
 import com.example.player.EqualizerEngine
 import com.example.player.EqualizerUiState
 import com.example.player.MediaSafety
 import com.example.player.SubtitleParser
 import com.example.ui.components.ThumbnailCache
 import com.example.ui.components.decodeSampledBitmap
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -122,5 +125,34 @@ class SafetyAndLeakTest {
         @Suppress("DEPRECATION")
         val pkgInfo: PackageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
         assertEquals("0.0.0-beta", pkgInfo.versionName)
+    }
+
+    @Test
+    fun `library view mode toggles switch back and forth atomically`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val repo = SettingsRepository(context)
+
+        // Ensure deterministic starting state
+        repo.setVideoFolderView(true)
+        repo.setVideoGridMode(false)
+        repo.setAudioFolderView(true)
+
+        // Folder <-> All Videos toggles cleanly back and forth
+        assertFalse(repo.toggleVideoFolderView())
+        assertFalse(repo.preferencesFlow.first().videoFolderView)
+        assertTrue(repo.toggleVideoFolderView())
+        assertTrue(repo.preferencesFlow.first().videoFolderView)
+
+        // Grid <-> List toggles cleanly back and forth
+        assertTrue(repo.toggleVideoGridMode())
+        assertTrue(repo.preferencesFlow.first().videoGridMode)
+        assertFalse(repo.toggleVideoGridMode())
+        assertFalse(repo.preferencesFlow.first().videoGridMode)
+
+        // Audio Folder <-> All Tracks toggles cleanly back and forth
+        assertFalse(repo.toggleAudioFolderView())
+        assertFalse(repo.preferencesFlow.first().audioFolderView)
+        assertTrue(repo.toggleAudioFolderView())
+        assertTrue(repo.preferencesFlow.first().audioFolderView)
     }
 }

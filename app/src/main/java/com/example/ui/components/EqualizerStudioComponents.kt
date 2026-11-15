@@ -946,6 +946,7 @@ private fun StudioChannelStripFader(
         else -> MaterialTheme.colorScheme.tertiary
     }
     val trackBg = MaterialTheme.colorScheme.surfaceContainerLowest
+    val capBg = MaterialTheme.colorScheme.surfaceContainerHighest
     val tickColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
     val zeroNotchColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
     val span = (band.maxLevelMb - band.minLevelMb).coerceAtLeast(1).toFloat()
@@ -1047,7 +1048,7 @@ private fun StudioChannelStripFader(
                 val capW = 28.dp.toPx()
                 val capH = 14.dp.toPx()
                 drawRoundRect(
-                    color = Color(0xFF1F293B),
+                    color = capBg,
                     topLeft = Offset(centerX - capW / 2f, thumbY - capH / 2f),
                     size = Size(capW, capH),
                     cornerRadius = CornerRadius(5.dp.toPx(), 5.dp.toPx())

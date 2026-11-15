@@ -19,6 +19,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -69,6 +70,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -80,6 +82,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -227,6 +230,9 @@ fun AudioPlayerScreen(
     val primaryColor = MaterialTheme.colorScheme.primary
     val secondaryColor = MaterialTheme.colorScheme.secondary
 
+    val onBgColor = MaterialTheme.colorScheme.onBackground
+
+    CompositionLocalProvider(LocalContentColor provides onBgColor) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -292,7 +298,11 @@ fun AudioPlayerScreen(
                         onClick = onBack,
                         modifier = Modifier.minimumInteractiveComponentSize()
                     ) {
-                        Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = "Collapse player")
+                        Icon(
+                            imageVector = Icons.Rounded.KeyboardArrowDown,
+                            contentDescription = "Collapse player",
+                            tint = onBgColor
+                        )
                     }
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
@@ -314,7 +324,11 @@ fun AudioPlayerScreen(
                             .minimumInteractiveComponentSize()
                             .testTag("audio_player_eq_button")
                     ) {
-                        Icon(Icons.Rounded.GraphicEq, contentDescription = "Equalizer")
+                        Icon(
+                            imageVector = Icons.Rounded.GraphicEq,
+                            contentDescription = "Equalizer",
+                            tint = onBgColor
+                        )
                     }
                 }
             }
@@ -331,6 +345,11 @@ fun AudioPlayerScreen(
                         spotColor = secondaryColor
                     )
                     .clip(artworkShape)
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f),
+                        shape = artworkShape
+                    )
                     .pointerInput(preferences.audioDoubleTapAction, currentMedia?.isLiked) {
                         detectTapGestures(
                             onDoubleTap = {
@@ -418,6 +437,7 @@ fun AudioPlayerScreen(
                     Text(
                         text = playbackState.currentTitle.ifBlank { "No Track Loaded" },
                         style = MaterialTheme.typography.headlineMedium,
+                        color = onBgColor,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -461,7 +481,8 @@ fun AudioPlayerScreen(
                     valueRange = 0f..duration.toFloat(),
                     colors = SliderDefaults.colors(
                         thumbColor = primaryColor,
-                        activeTrackColor = primaryColor
+                        activeTrackColor = primaryColor,
+                        inactiveTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest
                     ),
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -502,7 +523,12 @@ fun AudioPlayerScreen(
                     onClick = onSkipPrevious,
                     modifier = Modifier.size(54.dp)
                 ) {
-                    Icon(Icons.Rounded.SkipPrevious, contentDescription = "Previous", modifier = Modifier.size(34.dp))
+                    Icon(
+                        imageVector = Icons.Rounded.SkipPrevious,
+                        contentDescription = "Previous",
+                        tint = onBgColor,
+                        modifier = Modifier.size(34.dp)
+                    )
                 }
                 Surface(
                     shape = CircleShape,
@@ -524,7 +550,12 @@ fun AudioPlayerScreen(
                     onClick = onSkipNext,
                     modifier = Modifier.size(54.dp)
                 ) {
-                    Icon(Icons.Rounded.SkipNext, contentDescription = "Next", modifier = Modifier.size(34.dp))
+                    Icon(
+                        imageVector = Icons.Rounded.SkipNext,
+                        contentDescription = "Next",
+                        tint = onBgColor,
+                        modifier = Modifier.size(34.dp)
+                    )
                 }
                 val isRepeatOne = playbackState.repeatMode == Player.REPEAT_MODE_ONE
                 val isRepeatActive = playbackState.repeatMode != Player.REPEAT_MODE_OFF
@@ -622,17 +653,26 @@ fun AudioPlayerScreen(
                 }
                 if (currentMedia != null) {
                     IconButton(onClick = { onAddToPlaylist(currentMedia) }) {
-                        Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, contentDescription = "Add to playlist")
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.PlaylistAdd,
+                            contentDescription = "Add to playlist",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
                 IconButton(
                     onClick = { showQueueSheet = true },
                     modifier = Modifier.testTag("audio_player_queue_button")
                 ) {
-                    Icon(Icons.AutoMirrored.Rounded.QueueMusic, contentDescription = "Up next queue")
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.QueueMusic,
+                        contentDescription = "Up next queue",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }
+    }
     }
 
     if (showQueueSheet) {

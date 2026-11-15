@@ -992,7 +992,7 @@ private fun VideoTracksAndSubtitlesSheet(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(14.dp))
-                                    .background(Color(0xFF0A0E17))
+                                    .background(MaterialTheme.colorScheme.surfaceContainerLowest)
                                     .padding(16.dp),
                                 contentAlignment = Alignment.Center
                             ) {
