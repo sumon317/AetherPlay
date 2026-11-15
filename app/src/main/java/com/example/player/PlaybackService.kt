@@ -24,6 +24,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 
@@ -73,12 +74,15 @@ class PlaybackService : MediaSessionService() {
         })
 
         serviceScope.launch {
-            val savedEq = app.container.mediaRepository.getEqualizerSettings()
+            val (savedEq, prefs) = withContext(Dispatchers.IO) {
+                val eq = app.container.mediaRepository.getEqualizerSettings()
+                val userPrefs = app.container.settingsRepository.preferencesFlow.first()
+                eq to userPrefs
+            }
             equalizerEngine.loadPersistedSettings(savedEq)
             if (exoPlayer.audioSessionId != C.AUDIO_SESSION_ID_UNSET && exoPlayer.audioSessionId > 0) {
                 equalizerEngine.attachToAudioSession(exoPlayer.audioSessionId)
             }
-            val prefs = app.container.settingsRepository.preferencesFlow.first()
             applyDecoderPreferences(exoPlayer, prefs.decoderMode)
         }
 

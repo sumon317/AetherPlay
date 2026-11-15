@@ -6,10 +6,13 @@ import java.io.File
 import java.net.URI
 import java.util.Locale
 
+import java.util.concurrent.ConcurrentHashMap
+
 object MediaSafety {
 
     private val ALLOWED_STREAM_SCHEMES = setOf("http", "https", "rtsp", "rtmp", "rtp", "udp")
     private val ALLOWED_INCOMING_SCHEMES = setOf("content", "file", "http", "https")
+    private val cachedProtectedCanonDirs = ConcurrentHashMap<String, List<String>>()
 
     fun isValidStreamUrl(rawUrl: String): Boolean {
         val trimmed = rawUrl.trim()
@@ -40,28 +43,39 @@ object MediaSafety {
     }
 
     fun isAppPrivateFile(context: Context, file: File): Boolean {
-        val protectedDirs = buildList {
-            context.applicationInfo?.dataDir?.let { add(it) }
-            context.filesDir?.parentFile?.let { add(it.absolutePath) }
-            context.filesDir?.let { add(it.absolutePath) }
-            context.cacheDir?.let { add(it.absolutePath) }
-            context.noBackupFilesDir?.let { add(it.absolutePath) }
-            context.codeCacheDir?.let { add(it.absolutePath) }
-            context.getDatabasePath("aetherplay_db").parentFile?.let { add(it.absolutePath) }
+        val cacheKey = context.applicationInfo?.dataDir ?: context.packageName
+        val canonProtectedDirs = cachedProtectedCanonDirs.getOrPut(cacheKey) {
+            val rawDirs = buildList {
+                context.applicationInfo?.dataDir?.let { add(it) }
+                context.filesDir?.parentFile?.let { add(it.absolutePath) }
+                context.filesDir?.let { add(it.absolutePath) }
+                context.cacheDir?.let { add(it.absolutePath) }
+                context.noBackupFilesDir?.let { add(it.absolutePath) }
+                context.codeCacheDir?.let { add(it.absolutePath) }
+                context.getDatabasePath("aetherplay_db").parentFile?.let { add(it.absolutePath) }
+            }
+            rawDirs.mapNotNull { dir ->
+                if (dir.isBlank()) null
+                else runCatching { File(dir).canonicalPath }.getOrDefault(File(dir).absolutePath).trimEnd('/')
+            }.distinct()
         }
-        return isPathInsideProtectedDirs(file.absolutePath, protectedDirs)
+        return isPathInsideCanonicalDirs(file.absolutePath, canonProtectedDirs)
     }
 
     internal fun isPathInsideProtectedDirs(candidatePath: String, protectedDirs: List<String>): Boolean {
+        val canonDirs = protectedDirs.mapNotNull { dir ->
+            if (dir.isBlank()) null
+            else runCatching { File(dir).canonicalPath }.getOrDefault(File(dir).absolutePath).trimEnd('/')
+        }
+        return isPathInsideCanonicalDirs(candidatePath, canonDirs)
+    }
+
+    private fun isPathInsideCanonicalDirs(candidatePath: String, canonProtectedDirs: List<String>): Boolean {
         val candidateCanon = runCatching { File(candidatePath).canonicalPath }
             .getOrDefault(File(candidatePath).absolutePath)
             .trimEnd('/')
 
-        return protectedDirs.any { dir ->
-            if (dir.isBlank()) return@any false
-            val dirCanon = runCatching { File(dir).canonicalPath }
-                .getOrDefault(File(dir).absolutePath)
-                .trimEnd('/')
+        return canonProtectedDirs.any { dirCanon ->
             candidateCanon == dirCanon || candidateCanon.startsWith("$dirCanon/")
         }
     }

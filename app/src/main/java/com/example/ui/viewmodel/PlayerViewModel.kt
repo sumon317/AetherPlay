@@ -17,9 +17,13 @@ import com.example.player.PlaybackUiState
 import com.example.player.PlayerControllerHolder
 import com.example.player.SubtitleParser
 import com.example.player.TrackOption
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -42,13 +46,14 @@ class PlayerViewModel(
     val preferences: StateFlow<UserPreferences> = settingsRepository.preferencesFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UserPreferences())
 
-    val currentMediaEntity: StateFlow<MediaItemEntity?> = combine(
-        playbackState,
-        mediaRepository.recentFlow
-    ) { state, allRecent ->
-        val uri = state.currentUri ?: return@combine null
-        allRecent.firstOrNull { it.uri == uri } ?: mediaRepository.getMediaByUri(uri)
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val currentMediaEntity: StateFlow<MediaItemEntity?> = playbackState
+        .map { it.currentUri }
+        .distinctUntilChanged()
+        .flatMapLatest { uri ->
+            if (uri == null) flowOf(null) else mediaRepository.observeMediaByUri(uri)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     fun resolveVisibleSubtitles(state: PlaybackUiState, subPrefs: SubtitlePreferences): String {
         if (!state.subtitlesEnabled) return ""

@@ -460,7 +460,7 @@ private fun AetherPlayRoot(
                         ) {
                             MiniPlayerBar(
                                 playbackState = playbackState,
-                                controller = controller,
+                                controller = if (isFloatingVideoMode) null else controller,
                                 isVisible = !isFloatingVideoMode,
                                 onOpenPlayer = {
                                     isFloatingVideoMode = false

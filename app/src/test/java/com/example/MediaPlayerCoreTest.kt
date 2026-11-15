@@ -7,6 +7,7 @@ import com.example.data.local.UserPreferences
 import com.example.data.repository.MediaRepository
 import com.example.player.EqualizerEngine
 import com.example.player.EqualizerUiState
+import com.example.player.PlayerControllerHolder
 import com.example.player.SubtitleParser
 import com.example.player.TimedSubtitleCue
 import com.example.ui.components.formatDuration
@@ -81,6 +82,14 @@ class MediaPlayerCoreTest {
                 folderName = "Download"
             ),
             MediaItemEntity(
+                uri = "file:///storage/emulated/0/Music/My%20Songs/song.mp3",
+                title = "Song",
+                durationMs = 180_000L,
+                fileSizeBytes = 5_000_000L,
+                isVideo = false,
+                folderName = "My Songs"
+            ),
+            MediaItemEntity(
                 uri = "https://example.com/live.m3u8",
                 title = "Live Feed",
                 isVideo = true,
@@ -90,7 +99,7 @@ class MediaPlayerCoreTest {
         )
 
         val folders = LibraryViewModel.buildFolders(items, isVideo = true, sortOrder = MediaSortOrder.NAME_ASC)
-        assertEquals(3, folders.size)
+        assertEquals(4, folders.size)
 
         val actionFolder = folders.first { it.name == "Action" }
         assertEquals("/storage/emulated/0/Movies/Action", actionFolder.key)
@@ -100,12 +109,42 @@ class MediaPlayerCoreTest {
         assertEquals(14_000_000L, actionFolder.totalSizeBytes)
         assertEquals("Behind Scenes", actionFolder.items.first().title)
 
+        val mySongsFolder = folders.first { it.name == "My Songs" }
+        assertEquals("/storage/emulated/0/Music/My Songs", mySongsFolder.key)
+        assertEquals("Internal Storage/Music/My Songs", mySongsFolder.pathLabel)
+
         val sdFolder = folders.first { it.name == "Download" }
         assertEquals("SD Card/Download", sdFolder.pathLabel)
 
         val streamFolder = folders.first { it.name == "Streams" }
         assertEquals("virtual:streams", streamFolder.key)
         assertEquals("Network Streams", streamFolder.pathLabel)
+    }
+
+    @Test
+    fun `windowQueueAroundIndex bounds massive queues without losing selected item`() {
+        val largeLibrary = (0 until 1000).map { idx ->
+            MediaItemEntity(uri = "file:///storage/emulated/0/Music/track_$idx.mp3", title = "Track $idx", isVideo = false)
+        }
+
+        val (midWindow, midMapped) = PlayerControllerHolder.windowQueueAroundIndex(largeLibrary, 500)
+        assertEquals(PlayerControllerHolder.MAX_PLAYER_QUEUE_SIZE, midWindow.size)
+        assertEquals("Track 500", midWindow[midMapped].title)
+
+        val (headWindow, headMapped) = PlayerControllerHolder.windowQueueAroundIndex(largeLibrary, 3)
+        assertEquals(PlayerControllerHolder.MAX_PLAYER_QUEUE_SIZE, headWindow.size)
+        assertEquals(3, headMapped)
+        assertEquals("Track 3", headWindow[headMapped].title)
+
+        val (tailWindow, tailMapped) = PlayerControllerHolder.windowQueueAroundIndex(largeLibrary, 998)
+        assertEquals(PlayerControllerHolder.MAX_PLAYER_QUEUE_SIZE, tailWindow.size)
+        assertEquals(198, tailMapped)
+        assertEquals("Track 998", tailWindow[tailMapped].title)
+
+        val small = largeLibrary.take(25)
+        val (smallWindow, smallMapped) = PlayerControllerHolder.windowQueueAroundIndex(small, 10)
+        assertEquals(25, smallWindow.size)
+        assertEquals(10, smallMapped)
     }
 
     @Test

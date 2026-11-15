@@ -13,13 +13,14 @@ import com.example.data.local.SettingsRepository
 import com.example.data.local.UserPreferences
 import com.example.data.repository.MediaRepository
 import com.example.player.PlayerControllerHolder
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import java.io.File
 
 enum class MediaSortOrder(val label: String) {
     RECENT("Recently Added"),
@@ -178,7 +179,8 @@ class LibraryViewModel(
             isScanning = filters.scanning,
             statusBanner = filters.banner
         )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), LibraryUiState())
+    }.flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), LibraryUiState())
 
     fun observePlaylist(playlistId: Long): StateFlow<PlaylistWithItems?> =
         mediaRepository.observePlaylist(playlistId)
@@ -423,12 +425,16 @@ class LibraryViewModel(
 
         private fun resolveFolderInfo(item: MediaItemEntity): FolderInfo {
             if (item.uri.startsWith("file://")) {
-                val filePath = runCatching { java.net.URI(item.uri).path }.getOrNull()
-                    ?: item.uri.removePrefix("file://")
-                val parent = File(filePath).parentFile
-                if (parent != null) {
-                    val abs = parent.absolutePath
-                    val name = parent.name.ifBlank { "Internal Storage" }
+                val rawPath = item.uri.removePrefix("file://").substringBefore('?').substringBefore('#')
+                val filePath = if ('%' in rawPath) {
+                    runCatching { java.net.URI(item.uri).path }.getOrNull() ?: rawPath
+                } else {
+                    rawPath
+                }
+                val lastSlash = filePath.lastIndexOf('/')
+                if (lastSlash > 0) {
+                    val abs = filePath.substring(0, lastSlash)
+                    val name = abs.substringAfterLast('/').ifBlank { "Internal Storage" }
                     val prettyPath = formatStoragePath(abs)
                     return FolderInfo(key = abs, name = name, pathLabel = prettyPath)
                 }

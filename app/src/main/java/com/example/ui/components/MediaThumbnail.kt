@@ -38,10 +38,13 @@ import com.example.R
 import com.example.player.MediaSafety
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlin.math.max
 
 private const val MAX_THUMBNAIL_DIM_PX = 512
+private val thumbnailExtractorSemaphore = Semaphore(permits = 2)
 
 internal object ThumbnailCache {
     private val maxCacheKb: Int = ((Runtime.getRuntime().maxMemory() / 1024L) / 16L)
@@ -108,40 +111,44 @@ private suspend fun extractBitmap(
 ): Bitmap? {
     if (isStream) return null
     ThumbnailCache.get(uriString)?.let { return it }
-    val uri = runCatching { Uri.parse(uriString) }.getOrNull() ?: return null
-    if (!MediaSafety.isSafeExternalMediaUri(appContext, uri)) return null
 
     return withContext(Dispatchers.IO) {
-        val retriever = MediaMetadataRetriever()
-        val bmp = try {
-            retriever.setDataSource(appContext, uri)
-            if (isVideo) {
-                val raw = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-                    retriever.getScaledFrameAtTime(
-                        2_000_000L,
-                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                        MAX_THUMBNAIL_DIM_PX,
-                        MAX_THUMBNAIL_DIM_PX
-                    )
+        val uri = runCatching { Uri.parse(uriString) }.getOrNull() ?: return@withContext null
+        if (!MediaSafety.isSafeExternalMediaUri(appContext, uri)) return@withContext null
+
+        thumbnailExtractorSemaphore.withPermit {
+            ThumbnailCache.get(uriString)?.let { return@withPermit it }
+            val retriever = MediaMetadataRetriever()
+            val bmp = try {
+                retriever.setDataSource(appContext, uri)
+                if (isVideo) {
+                    val raw = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                        retriever.getScaledFrameAtTime(
+                            2_000_000L,
+                            MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                            MAX_THUMBNAIL_DIM_PX,
+                            MAX_THUMBNAIL_DIM_PX
+                        )
+                    } else {
+                        null
+                    } ?: retriever.getFrameAtTime(2_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                        ?: retriever.frameAtTime
+                    raw?.let { scaleDownIfNeeded(it, MAX_THUMBNAIL_DIM_PX) }
                 } else {
-                    null
-                } ?: retriever.getFrameAtTime(2_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                    ?: retriever.frameAtTime
-                raw?.let { scaleDownIfNeeded(it, MAX_THUMBNAIL_DIM_PX) }
-            } else {
-                retriever.embeddedPicture?.let { decodeSampledBitmap(it, MAX_THUMBNAIL_DIM_PX) }
+                    retriever.embeddedPicture?.let { decodeSampledBitmap(it, MAX_THUMBNAIL_DIM_PX) }
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (_: Exception) {
+                null
+            } finally {
+                runCatching { retriever.release() }
             }
-        } catch (ce: CancellationException) {
-            throw ce
-        } catch (_: Exception) {
-            null
-        } finally {
-            runCatching { retriever.release() }
+            if (bmp != null) {
+                ThumbnailCache.put(uriString, bmp)
+            }
+            bmp
         }
-        if (bmp != null) {
-            ThumbnailCache.put(uriString, bmp)
-        }
-        bmp
     }
 }
 

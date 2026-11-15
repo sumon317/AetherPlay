@@ -34,6 +34,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class TrackOption(
     val groupIndex: Int,
@@ -94,6 +95,7 @@ class PlayerControllerHolder(
 
     private var positionJob: Job? = null
     private var sleepTimerJob: Job? = null
+    private var playQueueJob: Job? = null
     private var lastSavedPositionTick = 0L
     private var attachedController: MediaController? = null
     private var attachedListener: Player.Listener? = null
@@ -281,7 +283,9 @@ class PlayerControllerHolder(
     fun playQueue(items: List<MediaItemEntity>, startIndex: Int = 0, resumeSavedPosition: Boolean = true) {
         if (items.isEmpty()) return
         val safeIndex = startIndex.coerceIn(0, items.lastIndex)
-        scope.launch {
+        val (windowedItems, mappedIndex) = windowQueueAroundIndex(items, safeIndex)
+        playQueueJob?.cancel()
+        playQueueJob = scope.launch {
             connect()
             var waitCount = 0
             while ((_controller.value == null || _controller.value?.isConnected != true) && waitCount < 40) {
@@ -292,8 +296,10 @@ class PlayerControllerHolder(
             val prefs = settingsRepository.preferencesFlow.first()
             val shouldResume = resumeSavedPosition && prefs.resumePlayback
 
-            val mediaItems = items.map { entity -> buildMediaItem(entity) }
-            val targetItem = items[safeIndex]
+            val mediaItems = withContext(Dispatchers.IO) {
+                windowedItems.map { entity -> buildMediaItem(entity) }
+            }
+            val targetItem = windowedItems[mappedIndex]
             val startPos = if (shouldResume && targetItem.lastPlayedPositionMs > 2000L &&
                 (targetItem.durationMs <= 0L || targetItem.lastPlayedPositionMs < targetItem.durationMs - 5000L)
             ) {
@@ -304,8 +310,8 @@ class PlayerControllerHolder(
 
             _uiState.update {
                 it.copy(
-                    queue = items,
-                    currentQueueIndex = safeIndex,
+                    queue = windowedItems,
+                    currentQueueIndex = mappedIndex,
                     errorMessage = null,
                     abLoopStartMs = null,
                     abLoopEndMs = null,
@@ -319,7 +325,7 @@ class PlayerControllerHolder(
                 _uiState.update { it.copy(externalCues = emptyList()) }
             }
 
-            ctrl.setMediaItems(mediaItems, safeIndex, startPos)
+            ctrl.setMediaItems(mediaItems, mappedIndex, startPos)
             ctrl.prepare()
             ctrl.play()
             syncFullState(ctrl)
@@ -452,7 +458,7 @@ class PlayerControllerHolder(
             val entity = mediaRepository.getMediaByUri(currentUri) ?: return@launch
             val pos = ctrl.currentPosition
             val wasPlaying = ctrl.isPlaying
-            val updatedItem = buildMediaItem(entity)
+            val updatedItem = withContext(Dispatchers.IO) { buildMediaItem(entity) }
             val idx = ctrl.currentMediaItemIndex
             if (idx >= 0) {
                 ctrl.replaceMediaItem(idx, updatedItem)
@@ -651,11 +657,36 @@ class PlayerControllerHolder(
 
     fun release() {
         persistCurrentProgress()
+        playQueueJob?.cancel()
         positionJob?.cancel()
         sleepTimerJob?.cancel()
         detachCurrentListener()
         controllerFuture?.let { MediaController.releaseFuture(it) }
         controllerFuture = null
         _controller.value = null
+    }
+
+    companion object {
+        const val MAX_PLAYER_QUEUE_SIZE = 200
+
+        internal fun windowQueueAroundIndex(
+            items: List<MediaItemEntity>,
+            targetIndex: Int,
+            maxWindowSize: Int = MAX_PLAYER_QUEUE_SIZE
+        ): Pair<List<MediaItemEntity>, Int> {
+            if (items.isEmpty()) return emptyList<MediaItemEntity>() to 0
+            val safeIndex = targetIndex.coerceIn(0, items.lastIndex)
+            val clampedMax = maxWindowSize.coerceAtLeast(1)
+            if (items.size <= clampedMax) return items to safeIndex
+
+            val half = clampedMax / 2
+            var start = (safeIndex - half).coerceAtLeast(0)
+            var endExclusive = start + clampedMax
+            if (endExclusive > items.size) {
+                endExclusive = items.size
+                start = (endExclusive - clampedMax).coerceAtLeast(0)
+            }
+            return items.subList(start, endExclusive) to (safeIndex - start)
+        }
     }
 }

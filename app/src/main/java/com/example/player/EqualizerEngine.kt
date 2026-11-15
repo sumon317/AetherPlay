@@ -12,6 +12,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 data class EqualizerBand(
     val index: Int,
@@ -173,6 +175,11 @@ class EqualizerEngine {
     private val _state = MutableStateFlow(EqualizerUiState())
     val state: StateFlow<EqualizerUiState> = _state.asStateFlow()
 
+    private val effectExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "AetherPlay-AudioEffect").apply { isDaemon = true }
+    }
+    private val applyPending = AtomicBoolean(false)
+
     private var equalizer: Equalizer? = null
     private var bassBoost: BassBoost? = null
     private var virtualizer: Virtualizer? = null
@@ -206,58 +213,62 @@ class EqualizerEngine {
                 loudnessGainMb = entity.loudnessGainMb.coerceIn(0, 1500)
             )
         }
-        applyAllEffects()
+        scheduleApplyAllEffects()
     }
 
     fun attachToAudioSession(audioSessionId: Int) {
-        if (audioSessionId <= 0 || audioSessionId == attachedAudioSessionId) return
-        releaseEffects()
-        attachedAudioSessionId = audioSessionId
+        if (audioSessionId <= 0) return
+        effectExecutor.execute {
+            if (audioSessionId == attachedAudioSessionId) return@execute
+            releaseEffectsInternal()
+            attachedAudioSessionId = audioSessionId
 
-        var hardwareBound = false
-        runCatching {
-            val eq = Equalizer(0, audioSessionId)
-            equalizer = eq
-            hardwareBound = true
-            val count = eq.numberOfBands.toInt().coerceAtLeast(1)
-            val range = eq.bandLevelRange
-            val minMb = range.getOrNull(0)?.toInt() ?: -1500
-            val maxMb = range.getOrNull(1)?.toInt() ?: 1500
+            var hardwareBound = false
+            runCatching {
+                val eq = Equalizer(0, audioSessionId)
+                equalizer = eq
+                hardwareBound = true
+                val count = eq.numberOfBands.toInt().coerceAtLeast(1)
+                val range = eq.bandLevelRange
+                val minMb = range.getOrNull(0)?.toInt() ?: -1500
+                val maxMb = range.getOrNull(1)?.toInt() ?: 1500
 
-            val currentBands = _state.value.bands
-            val hardwareBands = (0 until count).map { idx ->
-                val centerHz = (eq.getCenterFreq(idx.toShort()) / 1000).coerceAtLeast(30)
-                val preservedLevel = currentBands.getOrNull(idx)?.levelMb ?: 0
-                EqualizerBand(
-                    index = idx,
-                    centerFreqHz = centerHz,
-                    levelMb = preservedLevel.coerceIn(minMb, maxMb),
-                    minLevelMb = minMb,
-                    maxLevelMb = maxMb
-                )
+                _state.update { current ->
+                    val hardwareBands = (0 until count).map { idx ->
+                        val centerHz = (eq.getCenterFreq(idx.toShort()) / 1000).coerceAtLeast(30)
+                        val preservedLevel = current.bands.getOrNull(idx)?.levelMb ?: 0
+                        EqualizerBand(
+                            index = idx,
+                            centerFreqHz = centerHz,
+                            levelMb = preservedLevel.coerceIn(minMb, maxMb),
+                            minLevelMb = minMb,
+                            maxLevelMb = maxMb
+                        )
+                    }
+                    current.copy(bands = hardwareBands, isHardwareEffectBound = true)
+                }
             }
-            _state.update { it.copy(bands = hardwareBands, isHardwareEffectBound = true) }
-        }
 
-        runCatching {
-            bassBoost = BassBoost(0, audioSessionId)
-        }
-        runCatching {
-            virtualizer = Virtualizer(0, audioSessionId)
-        }
-        runCatching {
-            loudnessEnhancer = LoudnessEnhancer(audioSessionId)
-        }
+            runCatching {
+                bassBoost = BassBoost(0, audioSessionId)
+            }
+            runCatching {
+                virtualizer = Virtualizer(0, audioSessionId)
+            }
+            runCatching {
+                loudnessEnhancer = LoudnessEnhancer(audioSessionId)
+            }
 
-        if (!hardwareBound) {
-            _state.update { it.copy(isHardwareEffectBound = false) }
+            if (!hardwareBound) {
+                _state.update { it.copy(isHardwareEffectBound = false) }
+            }
+            applyAllEffectsInternal()
         }
-        applyAllEffects()
     }
 
     fun setEnabled(enabled: Boolean) {
         _state.update { it.copy(enabled = enabled) }
-        applyAllEffects()
+        scheduleApplyAllEffects()
     }
 
     fun applyPreset(preset: EqualizerPreset) {
@@ -278,7 +289,7 @@ class EqualizerEngine {
                 loudnessGainMb = preset.loudnessGainMb.coerceIn(0, 1500)
             )
         }
-        applyAllEffects()
+        scheduleApplyAllEffects()
     }
 
     fun applyCustomProfile(profile: CustomEqualizerProfile) {
@@ -315,7 +326,7 @@ class EqualizerEngine {
                 bands = updatedBands
             )
         }
-        applyAllEffects()
+        scheduleApplyAllEffects()
     }
 
     fun resetBandToFlat(bandIndex: Int) {
@@ -336,7 +347,7 @@ class EqualizerEngine {
                 bassBoostStrength = strength.coerceIn(0, 1000)
             )
         }
-        applyAllEffects()
+        scheduleApplyAllEffects()
     }
 
     fun setVirtualizer(strength: Int) {
@@ -353,7 +364,7 @@ class EqualizerEngine {
                 virtualizerStrength = strength.coerceIn(0, 1000)
             )
         }
-        applyAllEffects()
+        scheduleApplyAllEffects()
     }
 
     fun setLoudnessGain(gainMb: Int) {
@@ -370,7 +381,7 @@ class EqualizerEngine {
                 loudnessGainMb = gainMb.coerceIn(0, 1500)
             )
         }
-        applyAllEffects()
+        scheduleApplyAllEffects()
     }
 
     fun createCustomProfileSnapshot(name: String, existingProfileId: String? = null): CustomEqualizerProfile {
@@ -426,7 +437,16 @@ class EqualizerEngine {
         )
     }
 
-    private fun applyAllEffects() {
+    private fun scheduleApplyAllEffects() {
+        if (applyPending.compareAndSet(false, true)) {
+            effectExecutor.execute {
+                applyPending.set(false)
+                applyAllEffectsInternal()
+            }
+        }
+    }
+
+    private fun applyAllEffectsInternal() {
         val current = _state.value
         runCatching {
             equalizer?.let { eq ->
@@ -467,6 +487,12 @@ class EqualizerEngine {
     }
 
     fun releaseEffects() {
+        effectExecutor.execute {
+            releaseEffectsInternal()
+        }
+    }
+
+    private fun releaseEffectsInternal() {
         runCatching { equalizer?.release() }
         runCatching { bassBoost?.release() }
         runCatching { virtualizer?.release() }

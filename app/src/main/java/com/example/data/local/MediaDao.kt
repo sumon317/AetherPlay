@@ -30,11 +30,31 @@ interface MediaDao {
     @Query("SELECT * FROM media_items WHERE uri = :uri LIMIT 1")
     suspend fun getMediaByUri(uri: String): MediaItemEntity?
 
+    @Query("SELECT * FROM media_items WHERE uri = :uri LIMIT 1")
+    fun observeMediaByUri(uri: String): Flow<MediaItemEntity?>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertMedia(item: MediaItemEntity)
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertMediaIfAbsent(items: List<MediaItemEntity>)
+
+    @Transaction
+    suspend fun syncScannedMedia(
+        toInsert: List<MediaItemEntity>,
+        toDeleteUris: List<String>
+    ) {
+        if (toDeleteUris.isNotEmpty()) {
+            toDeleteUris.chunked(200).forEach { batch ->
+                deleteMediaByUris(batch)
+            }
+        }
+        if (toInsert.isNotEmpty()) {
+            toInsert.chunked(200).forEach { batch ->
+                insertMediaIfAbsent(batch)
+            }
+        }
+    }
 
     @Query("UPDATE media_items SET isLiked = :liked WHERE uri = :uri")
     suspend fun setLiked(uri: String, liked: Boolean)

@@ -50,6 +50,9 @@ class MediaRepository(
     fun observePlaylist(playlistId: Long): Flow<PlaylistWithItems?> =
         mediaDao.observePlaylistById(playlistId)
 
+    fun observeMediaByUri(uri: String): Flow<MediaItemEntity?> =
+        mediaDao.observeMediaByUri(uri)
+
     suspend fun getMediaByUri(uri: String): MediaItemEntity? = mediaDao.getMediaByUri(uri)
 
     suspend fun toggleLike(uri: String, isLiked: Boolean) {
@@ -304,17 +307,22 @@ class MediaRepository(
             }
 
             // Prune stale file:// entries whose backing file no longer exists on disk
-            if (Environment.getExternalStorageState() == Environment.MEDIA_MOUNTED) {
-                val missingFileUris = existingItems.filter { item ->
+            val missingFileUris = if (Environment.getExternalStorageState() == Environment.MEDIA_MOUNTED) {
+                existingItems.filter { item ->
                     !item.isStream && item.uri.startsWith("file://") &&
                         (Uri.parse(item.uri).path?.let { !File(it).exists() } == true)
                 }.map { it.uri }
-                if (missingFileUris.isNotEmpty()) {
-                    missingFileUris.chunked(200).forEach { batch ->
-                        mediaDao.deleteMediaByUris(batch)
-                    }
-                }
+            } else {
+                emptyList()
             }
+
+            val toInsert = discovered.filter { it.uri !in existingUris }
+            mediaDao.syncScannedMedia(toInsert = toInsert, toDeleteUris = missingFileUris)
+
+            return@withContext DeviceScanResult(
+                totalScanned = discovered.size,
+                newlyAdded = toInsert.size
+            )
         } else {
             // Fallback using MediaStore content:// URIs if only scoped media permission was granted
             for (entry in mediaStoreEntries) {
@@ -340,11 +348,7 @@ class MediaRepository(
         }
 
         val toInsert = discovered.filter { it.uri !in existingUris }
-        if (toInsert.isNotEmpty()) {
-            toInsert.chunked(200).forEach { batch ->
-                mediaDao.insertMediaIfAbsent(batch)
-            }
-        }
+        mediaDao.syncScannedMedia(toInsert = toInsert, toDeleteUris = emptyList())
 
         DeviceScanResult(
             totalScanned = discovered.size,
