@@ -144,6 +144,7 @@ dependencies {
   implementation(libs.androidx.media3.common)
   implementation(libs.androidx.media3.ui.compose)
   implementation(libs.androidx.media3.datasource.okhttp)
+  implementation(libs.nextlib.media3ext)
 
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)

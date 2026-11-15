@@ -63,7 +63,7 @@ enum class AudioSwipeAction(val label: String) {
 
 enum class AudioDoubleTapAction(val label: String) {
     TOGGLE_LIKE("Like / Dislike"),
-    OPEN_SUBTITLES("Open Subtitles")
+    PLAY_PAUSE("Play / Pause")
 }
 
 data class SubtitlePreferences(
@@ -100,6 +100,8 @@ data class UserPreferences(
     val audioSwipeDownAction: AudioSwipeAction = AudioSwipeAction.MINIMISE,
     val audioSwipeUpAction: AudioSwipeAction = AudioSwipeAction.OPEN_QUEUE,
     val audioDoubleTapAction: AudioDoubleTapAction = AudioDoubleTapAction.TOGGLE_LIKE,
+    val minVideoDurationSeconds: Int = 0,
+    val minAudioDurationSeconds: Int = 0,
     val subtitle: SubtitlePreferences = SubtitlePreferences()
 )
 
@@ -129,6 +131,8 @@ class SettingsRepository(private val context: Context) {
         val AUDIO_SWIPE_DOWN_ACTION = stringPreferencesKey("audio_swipe_down_action")
         val AUDIO_SWIPE_UP_ACTION = stringPreferencesKey("audio_swipe_up_action")
         val AUDIO_DOUBLE_TAP_ACTION = stringPreferencesKey("audio_double_tap_action")
+        val MIN_VIDEO_DURATION_SEC = intPreferencesKey("min_video_duration_seconds")
+        val MIN_AUDIO_DURATION_SEC = intPreferencesKey("min_audio_duration_seconds")
 
         val SUB_FONT_SIZE = floatPreferencesKey("sub_font_size")
         val SUB_FONT_STYLE = stringPreferencesKey("sub_font_style")
@@ -181,6 +185,8 @@ class SettingsRepository(private val context: Context) {
             audioDoubleTapAction = prefs[Keys.AUDIO_DOUBLE_TAP_ACTION]?.let {
                 runCatching { AudioDoubleTapAction.valueOf(it) }.getOrNull()
             } ?: AudioDoubleTapAction.TOGGLE_LIKE,
+            minVideoDurationSeconds = (prefs[Keys.MIN_VIDEO_DURATION_SEC] ?: 0).coerceIn(0, 3600),
+            minAudioDurationSeconds = (prefs[Keys.MIN_AUDIO_DURATION_SEC] ?: 0).coerceIn(0, 3600),
             subtitle = SubtitlePreferences(
                 fontSizeSp = prefs[Keys.SUB_FONT_SIZE] ?: 18f,
                 fontStyle = prefs[Keys.SUB_FONT_STYLE]?.let {
@@ -331,6 +337,14 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setAudioDoubleTapAction(action: AudioDoubleTapAction) {
         context.dataStore.edit { it[Keys.AUDIO_DOUBLE_TAP_ACTION] = action.name }
+    }
+
+    suspend fun setMinVideoDurationSeconds(seconds: Int) {
+        context.dataStore.edit { it[Keys.MIN_VIDEO_DURATION_SEC] = seconds.coerceIn(0, 3600) }
+    }
+
+    suspend fun setMinAudioDurationSeconds(seconds: Int) {
+        context.dataStore.edit { it[Keys.MIN_AUDIO_DURATION_SEC] = seconds.coerceIn(0, 3600) }
     }
 
     suspend fun updateSubtitlePreferences(transform: (SubtitlePreferences) -> SubtitlePreferences) {

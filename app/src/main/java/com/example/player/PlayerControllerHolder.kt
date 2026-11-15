@@ -1,9 +1,13 @@
 package com.example.player
 
 import android.content.ComponentName
+import android.content.ContentUris
 import android.content.Context
 import android.net.Uri
 import android.os.Bundle
+import android.provider.MediaStore
+import java.io.File
+import java.io.FileNotFoundException
 import androidx.annotation.OptIn
 import androidx.core.content.ContextCompat
 import androidx.media3.common.C
@@ -172,11 +176,25 @@ class PlayerControllerHolder(
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
+                val dur = ctrl.duration.coerceAtLeast(0L)
                 _uiState.update {
                     it.copy(
                         isBuffering = playbackState == Player.STATE_BUFFERING,
-                        durationMs = ctrl.duration.coerceAtLeast(0L)
+                        durationMs = dur
                     )
+                }
+                if (playbackState == Player.STATE_READY && dur > 0L) {
+                    val uri = ctrl.currentMediaItem?.mediaId
+                    if (uri != null) {
+                        scope.launch {
+                            mediaRepository.updateMissingTechnicalMetadata(
+                                uri = uri,
+                                durationMs = dur,
+                                width = _uiState.value.videoWidth,
+                                height = _uiState.value.videoHeight
+                            )
+                        }
+                    }
                 }
             }
 
@@ -223,11 +241,25 @@ class PlayerControllerHolder(
                 _uiState.update {
                     it.copy(videoWidth = videoSize.width, videoHeight = videoSize.height)
                 }
+                if (videoSize.width > 0 && videoSize.height > 0) {
+                    val uri = ctrl.currentMediaItem?.mediaId
+                    val dur = ctrl.duration.coerceAtLeast(0L)
+                    if (uri != null) {
+                        scope.launch {
+                            mediaRepository.updateMissingTechnicalMetadata(
+                                uri = uri,
+                                durationMs = dur,
+                                width = videoSize.width,
+                                height = videoSize.height
+                            )
+                        }
+                    }
+                }
             }
 
             override fun onPlayerError(error: PlaybackException) {
                 _uiState.update {
-                    it.copy(errorMessage = error.localizedMessage ?: "Playback error (${error.errorCodeName})")
+                    it.copy(errorMessage = formatPlaybackError(error))
                 }
             }
         }
@@ -509,7 +541,17 @@ class PlayerControllerHolder(
         _uiState.update { it.copy(errorMessage = null) }
     }
 
+    fun retryCurrentPlayback() {
+        val ctrl = _controller.value ?: return
+        _uiState.update { it.copy(errorMessage = null) }
+        val pos = ctrl.currentPosition.coerceAtLeast(0L)
+        ctrl.seekTo(pos)
+        ctrl.prepare()
+        ctrl.play()
+    }
+
     private fun buildMediaItem(entity: MediaItemEntity): MediaItem {
+        val playableUri = resolvePlayableUri(entity)
         val extras = Bundle().apply {
             putBoolean("is_video", entity.isVideo)
         }
@@ -522,17 +564,79 @@ class PlayerControllerHolder(
 
         val builder = MediaItem.Builder()
             .setMediaId(entity.uri)
-            .setUri(Uri.parse(entity.uri))
+            .setUri(playableUri)
             .setMediaMetadata(metadata)
 
-        if (!entity.externalSubtitleUri.isNullOrBlank()) {
-            val subConfig = SubtitleParser.buildSubtitleConfiguration(
-                context,
-                Uri.parse(entity.externalSubtitleUri)
-            )
-            builder.setSubtitleConfigurations(listOf(subConfig))
+        val subUriString = entity.externalSubtitleUri
+        if (!subUriString.isNullOrBlank()) {
+            val subUri = Uri.parse(subUriString)
+            if (isUriReadable(subUri)) {
+                val subConfig = SubtitleParser.buildSubtitleConfiguration(context, subUri)
+                builder.setSubtitleConfigurations(listOf(subConfig))
+            }
         }
         return builder.build()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun resolvePlayableUri(entity: MediaItemEntity): Uri {
+        val parsed = Uri.parse(entity.uri)
+        if (parsed.scheme?.lowercase() != "file") return parsed
+        val path = parsed.path ?: return parsed
+        val file = File(path)
+        if (file.exists() && file.canRead()) return parsed
+
+        // Fallback to MediaStore content:// URI if direct file:// access is unavailable
+        val collection = if (entity.isVideo) {
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        } else {
+            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+        }
+        val byData = runCatching {
+            context.contentResolver.query(
+                collection,
+                arrayOf(MediaStore.MediaColumns._ID),
+                "${MediaStore.MediaColumns.DATA} = ?",
+                arrayOf(path),
+                null
+            )?.use { c ->
+                if (c.moveToFirst()) ContentUris.withAppendedId(collection, c.getLong(0)) else null
+            }
+        }.getOrNull()
+        return byData ?: parsed
+    }
+
+    private fun isUriReadable(uri: Uri): Boolean {
+        return when (uri.scheme?.lowercase()) {
+            "file" -> uri.path?.let { File(it).canRead() } == true
+            "content" -> runCatching {
+                context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { true } ?: false
+            }.getOrDefault(false)
+            else -> true
+        }
+    }
+
+    private fun formatPlaybackError(error: PlaybackException): String {
+        val rootCause = generateSequence<Throwable>(error) { it.cause }.lastOrNull()
+        return when {
+            rootCause is SecurityException || error.errorCode == PlaybackException.ERROR_CODE_IO_NO_PERMISSION ->
+                "Access denied for this file. Grant All Files access or re-import the video."
+            rootCause is FileNotFoundException || error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ->
+                "File not found or unreadable on storage."
+            error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED ||
+                error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ->
+                "Unsupported or damaged media container (${rootCause?.message ?: error.errorCodeName})."
+            error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
+                error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED ||
+                error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED ||
+                error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES ->
+                "Codec not supported by current decoder. Try Software Decoder."
+            else -> {
+                val detail = rootCause?.message?.takeIf { it.isNotBlank() && it != error.localizedMessage }
+                if (detail != null) "${error.localizedMessage ?: "Playback error"}: $detail"
+                else error.localizedMessage ?: "Playback error (${error.errorCodeName})"
+            }
+        }
     }
 
     private fun syncFullState(ctrl: MediaController) {

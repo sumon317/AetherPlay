@@ -8,6 +8,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -81,11 +82,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.local.MediaItemEntity
 import com.example.ui.components.MediaThumbnail
@@ -130,6 +133,23 @@ fun VideosScreen(
     val activeFolder = uiState.activeVideoFolder
     val isShowingFolderList = isFolderView && activeFolder == null && uiState.searchQuery.isBlank()
 
+    val screenWidthDp = LocalConfiguration.current.screenWidthDp
+    val titleFontSize = when {
+        screenWidthDp < 360 -> 18.sp
+        screenWidthDp < 440 -> 20.sp
+        else -> 24.sp
+    }
+    val actionButtonSize = when {
+        screenWidthDp < 360 -> 38.dp
+        screenWidthDp < 440 -> 42.dp
+        else -> 48.dp
+    }
+    val actionIconSize = when {
+        screenWidthDp < 360 -> 20.dp
+        screenWidthDp < 440 -> 22.dp
+        else -> 24.dp
+    }
+
     BackHandler(enabled = activeFolder != null) {
         onSelectFolderKey(null)
     }
@@ -146,36 +166,48 @@ fun VideosScreen(
                     if (activeFolder != null) {
                         IconButton(
                             onClick = { onSelectFolderKey(null) },
-                            modifier = Modifier.testTag("videos_folder_back")
+                            modifier = Modifier
+                                .size(actionButtonSize)
+                                .testTag("videos_folder_back")
                         ) {
-                            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back to folders")
+                            Icon(
+                                Icons.AutoMirrored.Rounded.ArrowBack,
+                                contentDescription = "Back to folders",
+                                modifier = Modifier.size(actionIconSize)
+                            )
                         }
                     }
                 },
                 title = {
-                    if (activeFolder != null) {
-                        Text(
-                            text = activeFolder.name,
-                            style = MaterialTheme.typography.titleLarge,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                    Text(
+                        text = activeFolder?.name ?: "Videos",
+                        style = MaterialTheme.typography.titleLarge.copy(
+                            fontSize = titleFontSize,
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 },
                 actions = {
                     IconButton(
                         onClick = { showSearch = !showSearch },
-                        modifier = Modifier.testTag("videos_search_toggle")
+                        modifier = Modifier
+                            .size(actionButtonSize)
+                            .testTag("videos_search_toggle")
                     ) {
                         Icon(
                             imageVector = if (showSearch) Icons.Rounded.Close else Icons.Rounded.Search,
-                            contentDescription = "Search videos"
+                            contentDescription = "Search videos",
+                            modifier = Modifier.size(actionIconSize)
                         )
                     }
                     if (activeFolder == null) {
                         IconButton(
                             onClick = onToggleFolderView,
-                            modifier = Modifier.testTag("videos_folder_view_toggle")
+                            modifier = Modifier
+                                .size(actionButtonSize)
+                                .testTag("videos_folder_view_toggle")
                         ) {
                             Icon(
                                 imageVector = if (isFolderView) Icons.Rounded.VideoLibrary else Icons.Rounded.Folder,
@@ -184,13 +216,16 @@ fun VideosScreen(
                                     MaterialTheme.colorScheme.primary
                                 } else {
                                     MaterialTheme.colorScheme.onSurface
-                                }
+                                },
+                                modifier = Modifier.size(actionIconSize)
                             )
                         }
                     }
                     IconButton(
                         onClick = onToggleGridMode,
-                        modifier = Modifier.testTag("videos_layout_toggle")
+                        modifier = Modifier
+                            .size(actionButtonSize)
+                            .testTag("videos_layout_toggle")
                     ) {
                         Icon(
                             imageVector = if (isGridMode) Icons.AutoMirrored.Rounded.ViewList else Icons.Rounded.GridView,
@@ -199,39 +234,35 @@ fun VideosScreen(
                                 MaterialTheme.colorScheme.primary
                             } else {
                                 MaterialTheme.colorScheme.onSurface
-                            }
+                            },
+                            modifier = Modifier.size(actionIconSize)
                         )
-                    }
-                    Box {
-                        IconButton(onClick = { showSortMenu = true }) {
-                            Icon(Icons.AutoMirrored.Rounded.Sort, contentDescription = "Sort videos")
-                        }
-                        DropdownMenu(
-                            expanded = showSortMenu,
-                            onDismissRequest = { showSortMenu = false }
-                        ) {
-                            MediaSortOrder.entries.forEach { order ->
-                                DropdownMenuItem(
-                                    text = { Text(order.label) },
-                                    onClick = {
-                                        onSelectSort(order)
-                                        showSortMenu = false
-                                    }
-                                )
-                            }
-                        }
                     }
                     Box {
                         IconButton(
                             onClick = { showOverflowMenu = true },
-                            modifier = Modifier.testTag("videos_more_button")
+                            modifier = Modifier
+                                .size(actionButtonSize)
+                                .testTag("videos_more_button")
                         ) {
-                            Icon(Icons.Rounded.MoreVert, contentDescription = "More options")
+                            Icon(
+                                Icons.Rounded.MoreVert,
+                                contentDescription = "More options",
+                                modifier = Modifier.size(actionIconSize)
+                            )
                         }
                         DropdownMenu(
                             expanded = showOverflowMenu,
                             onDismissRequest = { showOverflowMenu = false }
                         ) {
+                            DropdownMenuItem(
+                                text = { Text("Sort: ${uiState.sortOrder.label}") },
+                                leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Sort, contentDescription = null) },
+                                onClick = {
+                                    showOverflowMenu = false
+                                    showSortMenu = true
+                                }
+                            )
                             DropdownMenuItem(
                                 text = { Text("Rescan Device Storage") },
                                 leadingIcon = { Icon(Icons.Rounded.Refresh, contentDescription = null) },
@@ -248,6 +279,20 @@ fun VideosScreen(
                                     onOpenStreamDialog()
                                 }
                             )
+                        }
+                        DropdownMenu(
+                            expanded = showSortMenu,
+                            onDismissRequest = { showSortMenu = false }
+                        ) {
+                            MediaSortOrder.entries.forEach { order ->
+                                DropdownMenuItem(
+                                    text = { Text(order.label) },
+                                    onClick = {
+                                        onSelectSort(order)
+                                        showSortMenu = false
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -930,6 +975,13 @@ private fun VideoListRow(
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val resBadge = formatResolution(video.width, video.height)
+    val durationText = if (video.durationMs > 0L) formatDuration(video.durationMs) else ""
+    val sizeText = formatFileSize(video.fileSizeBytes)
+    val fallbackMeta = when {
+        sizeText.isNotEmpty() -> sizeText
+        video.isStream -> "Stream"
+        else -> video.folderName
+    }
     val progress = if (video.durationMs > 0L && video.lastPlayedPositionMs > 0L) {
         (video.lastPlayedPositionMs.toFloat() / video.durationMs.toFloat()).coerceIn(0f, 1f)
     } else 0f
@@ -959,8 +1011,7 @@ private fun VideoListRow(
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
                 color = if (isPlayingNow) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
+                maxLines = Int.MAX_VALUE,
                 modifier = Modifier.fillMaxWidth()
             )
             Row(
@@ -969,7 +1020,7 @@ private fun VideoListRow(
             ) {
                 Box(
                     modifier = Modifier
-                        .width(88.dp)
+                        .width(68.dp)
                         .aspectRatio(16f / 9f)
                 ) {
                     MediaThumbnail(
@@ -977,49 +1028,28 @@ private fun VideoListRow(
                         isVideo = true,
                         isStream = video.isStream,
                         contentDescription = video.title,
-                        shape = RoundedCornerShape(10.dp),
+                        shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxSize()
                     )
-                    if (video.durationMs > 0L) {
-                        Surface(
-                            color = Color.Black.copy(alpha = 0.74f),
-                            shape = RoundedCornerShape(5.dp),
-                            modifier = Modifier
-                                .align(Alignment.BottomEnd)
-                                .padding(4.dp)
-                        ) {
-                            Text(
-                                text = formatDuration(video.durationMs),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color.White,
-                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                            )
-                        }
-                    }
                     if (progress > 0f) {
                         LinearProgressIndicator(
                             progress = { progress },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(2.5.dp)
+                                .height(2.dp)
                                 .align(Alignment.BottomCenter)
-                                .clip(RoundedCornerShape(bottomStart = 10.dp, bottomEnd = 10.dp)),
+                                .clip(RoundedCornerShape(bottomStart = 8.dp, bottomEnd = 8.dp)),
                             color = MaterialTheme.colorScheme.primary,
                             trackColor = Color.White.copy(alpha = 0.2f)
                         )
                     }
                 }
                 Spacer(modifier = Modifier.width(10.dp))
-                val sizeStr = formatFileSize(video.fileSizeBytes)
-                val metaText = when {
-                    sizeStr.isNotEmpty() -> sizeStr
-                    video.isStream -> "Stream"
-                    else -> video.folderName
-                }
-                Row(
+                FlowRow(
                     modifier = Modifier.weight(1f),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    itemVerticalAlignment = Alignment.CenterVertically
                 ) {
                     if (resBadge.isNotEmpty()) {
                         Surface(
@@ -1034,20 +1064,27 @@ private fun VideoListRow(
                             )
                         }
                     }
-                    if (metaText.isNotBlank()) {
+                    if (durationText.isNotEmpty()) {
                         Text(
-                            text = metaText,
-                            style = MaterialTheme.typography.bodySmall,
+                            text = durationText,
+                            style = MonoMetricsStyle,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1
+                        )
+                    }
+                    if (fallbackMeta.isNotBlank()) {
+                        Text(
+                            text = fallbackMeta,
+                            style = MonoMetricsStyle,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            maxLines = 1
                         )
                     }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(
                         onClick = onToggleLike,
-                        modifier = Modifier.size(38.dp)
+                        modifier = Modifier.size(36.dp)
                     ) {
                         Icon(
                             imageVector = if (video.isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
@@ -1059,7 +1096,7 @@ private fun VideoListRow(
                     Box {
                         IconButton(
                             onClick = { menuOpen = true },
-                            modifier = Modifier.size(38.dp)
+                            modifier = Modifier.size(36.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Rounded.MoreVert,

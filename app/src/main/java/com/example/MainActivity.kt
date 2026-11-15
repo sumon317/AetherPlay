@@ -359,18 +359,21 @@ private fun AetherPlayRoot(
         libraryViewModel.clearStatusBanner()
     }
 
-    LaunchedEffect(playbackState.errorMessage) {
-        val err = playbackState.errorMessage ?: return@LaunchedEffect
-        snackbarHostState.showSnackbar(err)
-        playerViewModel.clearError()
-    }
-
     val isFullScreenPlayer = currentDest?.hasRoute<VideoPlayerRoute>() == true ||
         currentDest?.hasRoute<AudioPlayerRoute>() == true
+    val isOnVideoPlayer = currentDest?.hasRoute<VideoPlayerRoute>() == true
     val isTopLevelTab = currentDest?.hasRoute<VideosRoute>() == true ||
         currentDest?.hasRoute<AudioRoute>() == true ||
         currentDest?.hasRoute<PlaylistsRoute>() == true ||
         currentDest?.hasRoute<SettingsRoute>() == true
+
+    LaunchedEffect(playbackState.errorMessage, isOnVideoPlayer) {
+        val err = playbackState.errorMessage ?: return@LaunchedEffect
+        if (!isOnVideoPlayer) {
+            snackbarHostState.showSnackbar(err)
+            playerViewModel.clearError()
+        }
+    }
 
     LaunchedEffect(currentDest, playbackState.isPlaying, playbackState.isVideo, preferences.autoPip) {
         val onVideoScreen = currentDest?.hasRoute<VideoPlayerRoute>() == true
@@ -673,6 +676,8 @@ private fun AetherPlayRoot(
                                 onSetAudioSwipeDownAction = settingsViewModel::setAudioSwipeDownAction,
                                 onSetAudioSwipeUpAction = settingsViewModel::setAudioSwipeUpAction,
                                 onSetAudioDoubleTapAction = settingsViewModel::setAudioDoubleTapAction,
+                                onSetMinVideoDurationSeconds = settingsViewModel::setMinVideoDurationSeconds,
+                                onSetMinAudioDurationSeconds = settingsViewModel::setMinAudioDurationSeconds,
                                 onUpdateSubtitlePrefs = settingsViewModel::updateSubtitlePreferences,
                                 onOpenEqualizer = {
                                     navController.navigate(EqualizerRoute) { launchSingleTop = true }
@@ -708,7 +713,10 @@ private fun AetherPlayRoot(
                                 preferences = preferences,
                                 subtitleText = subText,
                                 isInPipMode = isInPipMode,
-                                onBack = { navController.popBackStack() },
+                                onBack = {
+                                    playerViewModel.clearError()
+                                    navController.popBackStack()
+                                },
                                 onEnterPip = {
                                     onRequestPip(playbackState.videoWidth, playbackState.videoHeight)
                                 },
@@ -735,12 +743,12 @@ private fun AetherPlayRoot(
                                 onAttachExternalSubtitle = playerViewModel::attachExternalSubtitle,
                                 onUpdateSubtitlePrefs = playerViewModel::updateSubtitlePreferences,
                                 onSetSleepTimer = playerViewModel::setSleepTimer,
-                                onToggleAbLoop = playerViewModel::toggleAbLoop
+                                onToggleAbLoop = playerViewModel::toggleAbLoop,
+                                onRetryWithSoftwareDecoder = playerViewModel::retryWithSoftwareDecoder
                             )
                         }
 
                         composable<AudioPlayerRoute> {
-                            val subText = playerViewModel.resolveVisibleSubtitles(playbackState, preferences.subtitle)
                             val likedAudioSongs = remember(libraryState.likedItems) {
                                 libraryState.likedItems.filter { !it.isVideo }
                             }
@@ -748,7 +756,6 @@ private fun AetherPlayRoot(
                                 playbackState = playbackState,
                                 currentMedia = currentMedia,
                                 preferences = preferences,
-                                subtitleText = subText,
                                 likedSongs = likedAudioSongs,
                                 onBack = { navController.popBackStack() },
                                 onOpenEqualizer = {
@@ -778,10 +785,7 @@ private fun AetherPlayRoot(
                                 onCycleRepeat = playerViewModel::cycleRepeat,
                                 onToggleLike = playerViewModel::toggleCurrentLike,
                                 onSetSpeed = playerViewModel::setSpeed,
-                                onSetSleepTimer = playerViewModel::setSleepTimer,
-                                onSelectSubtitleTrack = playerViewModel::selectSubtitleTrack,
-                                onAttachExternalSubtitle = playerViewModel::attachExternalSubtitle,
-                                onUpdateSubtitlePrefs = playerViewModel::updateSubtitlePreferences
+                                onSetSleepTimer = playerViewModel::setSleepTimer
                             )
                         }
 

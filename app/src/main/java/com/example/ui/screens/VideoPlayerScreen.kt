@@ -4,8 +4,10 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.media.AudioManager
 import android.net.Uri
+import android.view.OrientationEventListener
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -14,6 +16,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -34,6 +37,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -46,6 +50,7 @@ import androidx.compose.material.icons.rounded.Audiotrack
 import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Brightness6
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.FastForward
 import androidx.compose.material.icons.rounded.FastRewind
 import androidx.compose.material.icons.rounded.Forward10
@@ -94,6 +99,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -104,13 +110,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
@@ -165,11 +171,14 @@ fun VideoPlayerScreen(
     onAttachExternalSubtitle: (Uri) -> Unit,
     onUpdateSubtitlePrefs: ((SubtitlePreferences) -> SubtitlePreferences) -> Unit,
     onSetSleepTimer: (Int?) -> Unit,
-    onToggleAbLoop: () -> Unit
+    onToggleAbLoop: () -> Unit,
+    onRetryWithSoftwareDecoder: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
     val view = LocalView.current
+    val configuration = LocalConfiguration.current
+    val isCurrentlyLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val isDarkTheme = LocalIsDarkTheme.current
     val audioManager = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
 
@@ -177,7 +186,8 @@ fun VideoPlayerScreen(
     var isLocked by remember { mutableStateOf(false) }
     var aspectMode by remember { mutableStateOf(AspectRatioMode.FIT) }
     var zoomScale by remember { mutableFloatStateOf(1f) }
-    var isLandscape by remember { mutableStateOf(false) }
+    var manualLockTargetOrientation by remember { mutableStateOf<Int?>(null) }
+    val currentManualTarget by rememberUpdatedState(manualLockTargetOrientation)
 
     var showTracksSheet by remember { mutableStateOf(false) }
     var tracksSheetInitialTab by remember { mutableIntStateOf(0) }
@@ -215,7 +225,38 @@ fun VideoPlayerScreen(
         onDispose { }
     }
 
-    DisposableEffect(isDarkTheme) {
+    // Always rotate video player via hardware sensor regardless of OS Auto-Rotate setting,
+    // releasing manual rotate lock back to sensor once physical orientation aligns.
+    DisposableEffect(activity, isInPipMode) {
+        var listener: OrientationEventListener? = null
+        if (activity != null && !isInPipMode) {
+            if (currentManualTarget == null) {
+                activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
+            }
+            listener = object : OrientationEventListener(activity) {
+                override fun onOrientationChanged(orientation: Int) {
+                    if (orientation == ORIENTATION_UNKNOWN) return
+                    val target = currentManualTarget ?: return
+                    val physicalOrientation = when {
+                        orientation <= 30 || orientation >= 330 -> Configuration.ORIENTATION_PORTRAIT
+                        orientation in 60..120 || orientation in 240..300 -> Configuration.ORIENTATION_LANDSCAPE
+                        else -> return
+                    }
+                    if (physicalOrientation == target) {
+                        manualLockTargetOrientation = null
+                        activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
+                    }
+                }
+            }.apply {
+                if (canDetectOrientation()) enable()
+            }
+        }
+        onDispose {
+            listener?.disable()
+        }
+    }
+
+    DisposableEffect(activity, isDarkTheme) {
         onDispose {
             activity?.window?.let { window ->
                 val insetsController = WindowCompat.getInsetsController(window, view)
@@ -539,7 +580,7 @@ fun VideoPlayerScreen(
                             style = MaterialTheme.typography.titleMedium,
                             color = Color.White,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE)
                         )
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -590,11 +631,16 @@ fun VideoPlayerScreen(
                     }
                     IconButton(
                         onClick = {
-                            isLandscape = !isLandscape
-                            activity?.requestedOrientation = if (isLandscape) {
+                            val nextTarget = if (isCurrentlyLandscape) {
+                                Configuration.ORIENTATION_PORTRAIT
+                            } else {
+                                Configuration.ORIENTATION_LANDSCAPE
+                            }
+                            manualLockTargetOrientation = nextTarget
+                            activity?.requestedOrientation = if (nextTarget == Configuration.ORIENTATION_LANDSCAPE) {
                                 ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                             } else {
-                                ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
                             }
                         }
                     ) {
@@ -765,6 +811,67 @@ fun VideoPlayerScreen(
                         }
                         IconButton(onClick = onSkipNext) {
                             Icon(Icons.Rounded.SkipNext, contentDescription = "Next", tint = Color.White)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Playback Error Overlay with Software Decoder Retry
+        val errorMsg = playbackState.errorMessage
+        if (errorMsg != null && !isInPipMode) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.72f))
+                    .padding(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    tonalElevation = 8.dp,
+                    modifier = Modifier.widthIn(max = 360.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.ErrorOutline,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(36.dp)
+                        )
+                        Text(
+                            text = "Unable to Play Video",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = errorMsg,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = onBack,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Go Back")
+                            }
+                            Button(
+                                onClick = onRetryWithSoftwareDecoder,
+                                modifier = Modifier.weight(1.3f)
+                            ) {
+                                Text("Retry (SW)")
+                            }
                         }
                     }
                 }

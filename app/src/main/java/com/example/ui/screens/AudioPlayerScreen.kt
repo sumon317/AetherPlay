@@ -1,9 +1,5 @@
 package com.example.ui.screens
 
-import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -19,6 +15,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -62,10 +59,7 @@ import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Speed
-import androidx.compose.material.icons.rounded.Subtitles
-import androidx.compose.material.icons.rounded.UploadFile
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -73,8 +67,6 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -100,12 +92,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -116,23 +106,15 @@ import androidx.media3.common.Player
 import com.example.data.local.AudioDoubleTapAction
 import com.example.data.local.AudioSwipeAction
 import com.example.data.local.MediaItemEntity
-import com.example.data.local.SubtitleEdgeStyle
-import com.example.data.local.SubtitleFontStyle
-import com.example.data.local.SubtitlePreferences
 import com.example.data.local.UserPreferences
 import com.example.player.PlaybackUiState
-import com.example.player.TrackOption
 import com.example.ui.components.MediaThumbnail
 import com.example.ui.components.formatDuration
-import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.MonoMetricsStyle
-import com.example.ui.theme.PlusJakartaSansFontFamily
-import com.example.ui.theme.SpaceGroteskFontFamily
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import java.util.Locale
 import kotlin.math.abs
-import kotlin.math.round
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
@@ -142,7 +124,6 @@ fun AudioPlayerScreen(
     playbackState: PlaybackUiState,
     currentMedia: MediaItemEntity?,
     preferences: UserPreferences,
-    subtitleText: String,
     likedSongs: List<MediaItemEntity>,
     onBack: () -> Unit,
     onOpenEqualizer: () -> Unit,
@@ -158,15 +139,11 @@ fun AudioPlayerScreen(
     onCycleRepeat: () -> Unit,
     onToggleLike: () -> Unit,
     onSetSpeed: (Float) -> Unit,
-    onSetSleepTimer: (Int?) -> Unit,
-    onSelectSubtitleTrack: (TrackOption?) -> Unit,
-    onAttachExternalSubtitle: (Uri) -> Unit,
-    onUpdateSubtitlePrefs: ((SubtitlePreferences) -> SubtitlePreferences) -> Unit
+    onSetSleepTimer: (Int?) -> Unit
 ) {
     var showQueueSheet by remember { mutableStateOf(false) }
     var showSpeedSheet by remember { mutableStateOf(false) }
     var showLikedSongsSheet by remember { mutableStateOf(false) }
-    var showSubtitleSheet by remember { mutableStateOf(false) }
     var isScrubbing by remember { mutableStateOf(false) }
     var scrubPos by remember { mutableLongStateOf(0L) }
 
@@ -219,12 +196,6 @@ fun AudioPlayerScreen(
             AudioSwipeAction.OPEN_EQUALIZER -> onOpenEqualizer()
             AudioSwipeAction.OPEN_LIKED_SONGS -> showLikedSongsSheet = true
         }
-    }
-
-    val subtitleFileLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) onAttachExternalSubtitle(uri)
     }
 
     val primaryColor = MaterialTheme.colorScheme.primary
@@ -360,8 +331,8 @@ fun AudioPlayerScreen(
                                         likeFeedbackTick++
                                         onToggleLike()
                                     }
-                                    AudioDoubleTapAction.OPEN_SUBTITLES -> {
-                                        showSubtitleSheet = true
+                                    AudioDoubleTapAction.PLAY_PAUSE -> {
+                                        onTogglePlayPause()
                                     }
                                 }
                             }
@@ -417,17 +388,6 @@ fun AudioPlayerScreen(
                     .height(30.dp)
             )
 
-            // Active Subtitle / Lyric Line (when subtitles enabled and text available)
-            AnimatedVisibility(visible = playbackState.subtitlesEnabled && subtitleText.isNotBlank()) {
-                AudioSubtitleBanner(
-                    text = subtitleText,
-                    prefs = preferences.subtitle,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { showSubtitleSheet = true }
-                )
-            }
-
             // Track Info & Like Button
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -439,7 +399,7 @@ fun AudioPlayerScreen(
                         style = MaterialTheme.typography.headlineMedium,
                         color = onBgColor,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE)
                     )
                     Text(
                         text = playbackState.currentArtist.ifBlank { "AetherPlay Studio" },
@@ -637,20 +597,6 @@ fun AudioPlayerScreen(
                         )
                     }
                 }
-                IconButton(
-                    onClick = { showSubtitleSheet = true },
-                    modifier = Modifier.testTag("audio_player_subtitles_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Subtitles,
-                        contentDescription = "Subtitles",
-                        tint = if (playbackState.externalSubtitleUri != null && playbackState.subtitlesEnabled) {
-                            primaryColor
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        }
-                    )
-                }
                 if (currentMedia != null) {
                     IconButton(onClick = { onAddToPlaylist(currentMedia) }) {
                         Icon(
@@ -787,19 +733,6 @@ fun AudioPlayerScreen(
         }
     }
 
-    if (showSubtitleSheet) {
-        AudioSubtitleConfigSheet(
-            playbackState = playbackState,
-            subtitlePrefs = preferences.subtitle,
-            onDismiss = { showSubtitleSheet = false },
-            onSelectSubtitleTrack = onSelectSubtitleTrack,
-            onPickExternalSubtitle = {
-                subtitleFileLauncher.launch(arrayOf("application/x-subrip", "text/vtt", "text/plain", "*/*"))
-            },
-            onUpdateSubtitlePrefs = onUpdateSubtitlePrefs
-        )
-    }
-
     if (showSpeedSheet) {
         ModalBottomSheet(onDismissRequest = { showSpeedSheet = false }) {
             Column(
@@ -881,202 +814,6 @@ private fun ModeTogglePillButton(
                     )
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun AudioSubtitleBanner(
-    text: String,
-    prefs: SubtitlePreferences,
-    modifier: Modifier = Modifier
-) {
-    val fontFamily = when (prefs.fontStyle) {
-        SubtitleFontStyle.SANS -> PlusJakartaSansFontFamily
-        SubtitleFontStyle.MONO -> JetBrainsMonoFontFamily
-        SubtitleFontStyle.DISPLAY -> SpaceGroteskFontFamily
-    }
-    val bgColor = when (prefs.edgeStyle) {
-        SubtitleEdgeStyle.BOXED -> Color.Black.copy(alpha = prefs.backgroundOpacity.coerceIn(0.15f, 0.95f))
-        SubtitleEdgeStyle.NONE -> MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.72f)
-        else -> MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f)
-    }
-    val shadow = when (prefs.edgeStyle) {
-        SubtitleEdgeStyle.DROP_SHADOW, SubtitleEdgeStyle.OUTLINE -> Shadow(
-            color = Color.Black.copy(alpha = 0.75f),
-            offset = Offset(1f, 1.5f),
-            blurRadius = 3f
-        )
-        else -> null
-    }
-    Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = bgColor,
-        modifier = modifier
-    ) {
-        Text(
-            text = text,
-            textAlign = TextAlign.Center,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            style = TextStyle(
-                fontFamily = fontFamily,
-                fontSize = prefs.fontSizeSp.coerceIn(12f, 22f).sp,
-                fontWeight = FontWeight.SemiBold,
-                color = if (prefs.edgeStyle == SubtitleEdgeStyle.BOXED) {
-                    Color(prefs.textColorHex)
-                } else {
-                    MaterialTheme.colorScheme.onSurface
-                },
-                shadow = shadow
-            ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 6.dp)
-        )
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun AudioSubtitleConfigSheet(
-    playbackState: PlaybackUiState,
-    subtitlePrefs: SubtitlePreferences,
-    onDismiss: () -> Unit,
-    onSelectSubtitleTrack: (TrackOption?) -> Unit,
-    onPickExternalSubtitle: () -> Unit,
-    onUpdateSubtitlePrefs: ((SubtitlePreferences) -> SubtitlePreferences) -> Unit
-) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        LazyColumn(
-            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Subtitles & Lyrics", style = MaterialTheme.typography.titleLarge)
-                    FilledTonalButton(onClick = onPickExternalSubtitle) {
-                        Icon(Icons.Rounded.UploadFile, contentDescription = null)
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Load .srt/.vtt")
-                    }
-                }
-            }
-
-            item {
-                ListItem(
-                    headlineContent = { Text("Disable Subtitles") },
-                    leadingContent = {
-                        RadioButton(
-                            selected = !playbackState.subtitlesEnabled,
-                            onClick = { onSelectSubtitleTrack(null) }
-                        )
-                    },
-                    modifier = Modifier.clickable { onSelectSubtitleTrack(null) }
-                )
-            }
-
-            items(playbackState.subtitleTracks) { track ->
-                ListItem(
-                    headlineContent = { Text(track.label) },
-                    supportingContent = track.codec?.let { { Text(it) } },
-                    leadingContent = {
-                        RadioButton(
-                            selected = playbackState.subtitlesEnabled && track.isSelected,
-                            onClick = { onSelectSubtitleTrack(track) }
-                        )
-                    },
-                    modifier = Modifier.clickable { onSelectSubtitleTrack(track) }
-                )
-            }
-
-            if (playbackState.externalSubtitleUri != null) {
-                item {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = "External subtitle loaded (${playbackState.externalCues.size} cues)",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.padding(12.dp)
-                        )
-                    }
-                }
-            }
-
-            item {
-                Text("Font Size: ${subtitlePrefs.fontSizeSp.toInt()} sp", style = MaterialTheme.typography.labelLarge)
-                Slider(
-                    value = subtitlePrefs.fontSizeSp,
-                    onValueChange = { size -> onUpdateSubtitlePrefs { it.copy(fontSizeSp = size) } },
-                    valueRange = 12f..36f
-                )
-            }
-
-            item {
-                val delaySec = subtitlePrefs.syncDelayMs / 1000f
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Sync Delay: ${String.format(Locale.US, "%+.1fs", delaySec)}",
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                    OutlinedButton(
-                        onClick = { onUpdateSubtitlePrefs { it.copy(syncDelayMs = 0L) } }
-                    ) {
-                        Text("Reset 0.0s")
-                    }
-                }
-                Slider(
-                    value = delaySec,
-                    onValueChange = { sec ->
-                        val snapped = (round(sec * 10f) / 10f)
-                        onUpdateSubtitlePrefs { it.copy(syncDelayMs = (snapped * 1000L).toLong()) }
-                    },
-                    valueRange = -5.0f..5.0f
-                )
-            }
-
-            item {
-                Text("Font Family", style = MaterialTheme.typography.labelLarge)
-                Spacer(modifier = Modifier.height(6.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(SubtitleFontStyle.entries) { style ->
-                        FilterChip(
-                            selected = subtitlePrefs.fontStyle == style,
-                            onClick = { onUpdateSubtitlePrefs { it.copy(fontStyle = style) } },
-                            label = { Text(style.label) }
-                        )
-                    }
-                }
-            }
-
-            item {
-                Text("Edge & Background", style = MaterialTheme.typography.labelLarge)
-                Spacer(modifier = Modifier.height(6.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(SubtitleEdgeStyle.entries) { edge ->
-                        FilterChip(
-                            selected = subtitlePrefs.edgeStyle == edge,
-                            onClick = { onUpdateSubtitlePrefs { it.copy(edgeStyle = edge) } },
-                            label = { Text(edge.label) }
-                        )
-                    }
-                }
-            }
-
-            item { Spacer(modifier = Modifier.height(16.dp)) }
         }
     }
 }

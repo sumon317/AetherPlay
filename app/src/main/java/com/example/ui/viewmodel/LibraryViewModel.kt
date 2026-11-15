@@ -118,14 +118,28 @@ class LibraryViewModel(
         )
     }
 
-    val uiState: StateFlow<LibraryUiState> = combine(libraryInputs, filterInputs) { data, filters ->
-        val allVideoFolders = buildFolders(data.videos, isVideo = true, sortOrder = filters.sort)
+    val uiState: StateFlow<LibraryUiState> = combine(
+        libraryInputs,
+        filterInputs,
+        settingsRepository.preferencesFlow
+    ) { data, filters, prefs ->
+        val visibleVideos = filterByMinDuration(data.videos, prefs.minVideoDurationSeconds)
+        val visibleAudio = filterByMinDuration(data.audio, prefs.minAudioDurationSeconds)
+        val visibleLiked = data.liked.filter { item ->
+            val minSec = if (item.isVideo) prefs.minVideoDurationSeconds else prefs.minAudioDurationSeconds
+            passesMinDuration(item, minSec)
+        }
+        val visibleContinueWatching = data.continueWatching.filter { item ->
+            item.isVideo && item.lastPlayedPositionMs > 0L && passesMinDuration(item, prefs.minVideoDurationSeconds)
+        }
+
+        val allVideoFolders = buildFolders(visibleVideos, isVideo = true, sortOrder = filters.sort)
         val activeVideoKey = filters.videoFolderKey?.takeIf { key -> allVideoFolders.any { it.key == key } }
 
         val videoBase = if (activeVideoKey != null) {
             allVideoFolders.firstOrNull { it.key == activeVideoKey }?.items.orEmpty()
         } else {
-            data.videos
+            visibleVideos
         }
 
         val filteredVideos = videoBase
@@ -136,7 +150,7 @@ class LibraryViewModel(
             }
             .sortWithOrder(filters.sort)
 
-        val allAudioFolders = buildFolders(data.audio, isVideo = false, sortOrder = filters.sort)
+        val allAudioFolders = buildFolders(visibleAudio, isVideo = false, sortOrder = filters.sort)
         val activeAudioKey = filters.audioFolderKey?.takeIf { key -> allAudioFolders.any { it.key == key } }
 
         val baseAudio = when (filters.audioTab) {
@@ -144,11 +158,13 @@ class LibraryViewModel(
                 if (activeAudioKey != null) {
                     allAudioFolders.firstOrNull { it.key == activeAudioKey }?.items.orEmpty()
                 } else {
-                    data.audio
+                    visibleAudio
                 }
             }
-            AudioFilterTab.LIKED -> data.liked.filter { !it.isVideo }
-            AudioFilterTab.RECENT -> data.continueWatching.filter { !it.isVideo }
+            AudioFilterTab.LIKED -> visibleLiked.filter { !it.isVideo }
+            AudioFilterTab.RECENT -> data.continueWatching.filter {
+                !it.isVideo && passesMinDuration(it, prefs.minAudioDurationSeconds)
+            }
         }
 
         val filteredAudio = baseAudio
@@ -163,11 +179,11 @@ class LibraryViewModel(
 
         LibraryUiState(
             videos = filteredVideos,
-            allVideosCount = data.videos.size,
+            allVideosCount = visibleVideos.size,
             audioTracks = filteredAudio,
-            allAudioCount = data.audio.size,
-            likedItems = data.liked,
-            continueWatching = data.continueWatching.filter { it.isVideo && it.lastPlayedPositionMs > 0L },
+            allAudioCount = visibleAudio.size,
+            likedItems = visibleLiked,
+            continueWatching = visibleContinueWatching,
             playlists = data.playlists,
             videoFolders = allVideoFolders,
             selectedVideoFolderKey = activeVideoKey,
@@ -459,6 +475,16 @@ class LibraryViewModel(
                 }
                 else -> normalized
             }
+        }
+
+        internal fun passesMinDuration(item: MediaItemEntity, minSeconds: Int): Boolean {
+            if (minSeconds <= 0 || item.isStream || item.durationMs <= 0L) return true
+            return item.durationMs >= minSeconds * 1000L
+        }
+
+        internal fun filterByMinDuration(items: List<MediaItemEntity>, minSeconds: Int): List<MediaItemEntity> {
+            if (minSeconds <= 0) return items
+            return items.filter { passesMinDuration(it, minSeconds) }
         }
 
         internal fun List<MediaItemEntity>.sortWithOrder(order: MediaSortOrder): List<MediaItemEntity> = when (order) {

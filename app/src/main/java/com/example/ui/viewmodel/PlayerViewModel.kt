@@ -8,6 +8,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.media3.session.MediaController
 import com.example.AppContainer
+import com.example.data.local.DecoderMode
 import com.example.data.local.MediaItemEntity
 import com.example.data.local.SettingsRepository
 import com.example.data.local.SubtitlePreferences
@@ -18,6 +19,7 @@ import com.example.player.PlayerControllerHolder
 import com.example.player.SubtitleParser
 import com.example.player.TrackOption
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -94,6 +96,14 @@ class PlayerViewModel(
     fun setSleepTimer(minutes: Int?) = playerController.setSleepTimer(minutes)
     fun toggleAbLoop() = playerController.toggleAbLoopPoint()
     fun clearError() = playerController.clearError()
+
+    fun retryWithSoftwareDecoder() {
+        viewModelScope.launch {
+            settingsRepository.setDecoderMode(DecoderMode.SOFTWARE_PREFERRED)
+            delay(150L)
+            playerController.retryCurrentPlayback()
+        }
+    }
 
     fun toggleCurrentLike() {
         val current = currentMediaEntity.value ?: return

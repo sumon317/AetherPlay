@@ -10,6 +10,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -181,7 +182,7 @@ fun MiniPlayerBar(
                                 text = playbackState.currentTitle.ifBlank { "Now Playing" },
                                 style = MaterialTheme.typography.titleSmall,
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE)
                             )
                             val timeMeta = if (playbackState.durationMs > 0L) {
                                 "${formatDuration(playbackState.currentPositionMs)} / ${formatDuration(playbackState.durationMs)}"

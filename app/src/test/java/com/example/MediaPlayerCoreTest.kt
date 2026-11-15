@@ -52,6 +52,7 @@ class MediaPlayerCoreTest {
         assertEquals(AudioDoubleTapAction.TOGGLE_LIKE, defaults.audioDoubleTapAction)
         assertEquals(4, AudioSwipeAction.entries.size)
         assertEquals(2, AudioDoubleTapAction.entries.size)
+        assertTrue(AudioDoubleTapAction.entries.contains(AudioDoubleTapAction.PLAY_PAUSE))
     }
 
     @Test
@@ -190,5 +191,63 @@ class MediaPlayerCoreTest {
         assertEquals("4K", formatResolution(3840, 2160))
         assertEquals("1080p", formatResolution(1920, 1080))
         assertEquals("1.5 MB", formatFileSize(1_572_864L))
+    }
+
+    @Test
+    fun `minimum duration filter hides short clips while preserving streams and unknown durations`() {
+        val defaults = UserPreferences()
+        assertEquals(0, defaults.minVideoDurationSeconds)
+        assertEquals(0, defaults.minAudioDurationSeconds)
+
+        val shortClip = MediaItemEntity(
+            uri = "file:///storage/emulated/0/WhatsApp/status.mp4",
+            title = "Status",
+            durationMs = 12_000L,
+            isVideo = true
+        )
+        val longMovie = MediaItemEntity(
+            uri = "file:///storage/emulated/0/Movies/film.mkv",
+            title = "Film",
+            durationMs = 600_000L,
+            isVideo = true
+        )
+        val exactBoundary = MediaItemEntity(
+            uri = "file:///storage/emulated/0/Movies/intro.mp4",
+            title = "Intro",
+            durationMs = 30_000L,
+            isVideo = true
+        )
+        val unknownDuration = MediaItemEntity(
+            uri = "file:///storage/emulated/0/Movies/unindexed.mkv",
+            title = "Unindexed",
+            durationMs = 0L,
+            isVideo = true
+        )
+        val liveStream = MediaItemEntity(
+            uri = "https://example.com/live.m3u8",
+            title = "Live",
+            durationMs = 0L,
+            isVideo = true,
+            isStream = true
+        )
+
+        val all = listOf(shortClip, longMovie, exactBoundary, unknownDuration, liveStream)
+
+        // Filter Off (0s) shows everything
+        assertEquals(5, LibraryViewModel.filterByMinDuration(all, 0).size)
+
+        // 30s filter hides 12s status clip, keeps 30s, 600s, unknown, and stream
+        val filtered30 = LibraryViewModel.filterByMinDuration(all, 30)
+        assertEquals(4, filtered30.size)
+        assertFalse(filtered30.contains(shortClip))
+        assertTrue(filtered30.contains(exactBoundary))
+        assertTrue(filtered30.contains(longMovie))
+        assertTrue(filtered30.contains(unknownDuration))
+        assertTrue(filtered30.contains(liveStream))
+
+        // 60s filter hides both 12s and 30s clips
+        val filtered60 = LibraryViewModel.filterByMinDuration(all, 60)
+        assertEquals(3, filtered60.size)
+        assertFalse(filtered60.contains(exactBoundary))
     }
 }

@@ -1,12 +1,15 @@
 package com.example.ui.components
 
+import android.content.ContentResolver
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Color as AndroidColor
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.util.LruCache
+import android.util.Size
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -41,10 +44,17 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
+import java.security.MessageDigest
 import kotlin.math.max
+import kotlin.math.min
 
-private const val MAX_THUMBNAIL_DIM_PX = 512
-private val thumbnailExtractorSemaphore = Semaphore(permits = 2)
+private const val MAX_THUMBNAIL_DIM_PX = 320
+private const val DISK_CACHE_DIR = "thumbs_v1"
+private const val DISK_CACHE_MAX_FILES = 250
+private const val DISK_CACHE_TRIM_TARGET = 180
+private val thumbnailExtractorSemaphore = Semaphore(permits = 4)
 
 internal object ThumbnailCache {
     private val maxCacheKb: Int = ((Runtime.getRuntime().maxMemory() / 1024L) / 16L)
@@ -103,6 +113,96 @@ private fun scaleDownIfNeeded(bitmap: Bitmap, maxDimPx: Int = MAX_THUMBNAIL_DIM_
     return scaled
 }
 
+private fun isMostlySolidColor(bitmap: Bitmap): Boolean {
+    if (bitmap.isRecycled || bitmap.width < 4 || bitmap.height < 4) return false
+    var minLuma = 255
+    var maxLuma = 0
+    var sumLuma = 0
+    var count = 0
+    for (row in 1..4) {
+        val y = (bitmap.height * row) / 5
+        for (col in 1..4) {
+            val x = (bitmap.width * col) / 5
+            val px = bitmap.getPixel(x, y)
+            val luma = (AndroidColor.red(px) * 30 + AndroidColor.green(px) * 59 + AndroidColor.blue(px) * 11) / 100
+            minLuma = min(minLuma, luma)
+            maxLuma = max(maxLuma, luma)
+            sumLuma += luma
+            count++
+        }
+    }
+    if (count == 0) return false
+    val spread = maxLuma - minLuma
+    val avg = sumLuma / count
+    return spread <= 12 && (avg <= 16 || avg >= 238)
+}
+
+private fun sha256Hex(key: String): String {
+    val digest = MessageDigest.getInstance("SHA-256").digest(key.toByteArray(Charsets.UTF_8))
+    return buildString(digest.size * 2) {
+        for (b in digest) {
+            val v = b.toInt() and 0xFF
+            append("0123456789abcdef"[v ushr 4])
+            append("0123456789abcdef"[v and 0x0F])
+        }
+    }
+}
+
+private fun diskCacheFile(appContext: Context, uriString: String): File {
+    val dir = File(appContext.cacheDir, DISK_CACHE_DIR)
+    if (!dir.exists()) {
+        dir.mkdirs()
+    }
+    return File(dir, "${sha256Hex(uriString)}.jpg")
+}
+
+private fun readFromDiskCache(appContext: Context, uriString: String): Bitmap? {
+    return runCatching {
+        val file = diskCacheFile(appContext, uriString)
+        if (!file.exists() || file.length() <= 0L) return@runCatching null
+        val opts = BitmapFactory.Options().apply {
+            inPreferredConfig = Bitmap.Config.RGB_565
+        }
+        BitmapFactory.decodeFile(file.absolutePath, opts)?.takeIf { !it.isRecycled }
+    }.getOrNull()
+}
+
+private fun writeToDiskCache(appContext: Context, uriString: String, bitmap: Bitmap) {
+    if (bitmap.isRecycled) return
+    runCatching {
+        val target = diskCacheFile(appContext, uriString)
+        val tmp = File(target.parentFile, "${target.name}.tmp")
+        FileOutputStream(tmp).use { out ->
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 82, out)
+        }
+        if (target.exists()) target.delete()
+        if (!tmp.renameTo(target)) {
+            tmp.delete()
+        }
+        val dir = target.parentFile ?: return@runCatching
+        val files = dir.listFiles() ?: return@runCatching
+        if (files.size > DISK_CACHE_MAX_FILES) {
+            files.sortedBy { it.lastModified() }
+                .take(files.size - DISK_CACHE_TRIM_TARGET)
+                .forEach { it.delete() }
+        }
+    }
+}
+
+private fun extractScaledFrame(retriever: MediaMetadataRetriever, timeUs: Long): Bitmap? {
+    val raw = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+        retriever.getScaledFrameAtTime(
+            timeUs,
+            MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+            MAX_THUMBNAIL_DIM_PX,
+            MAX_THUMBNAIL_DIM_PX
+        )
+    } else {
+        null
+    } ?: retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+    return raw?.let { scaleDownIfNeeded(it, MAX_THUMBNAIL_DIM_PX) }
+}
+
 private suspend fun extractBitmap(
     appContext: Context,
     uriString: String,
@@ -116,35 +216,96 @@ private suspend fun extractBitmap(
         val uri = runCatching { Uri.parse(uriString) }.getOrNull() ?: return@withContext null
         if (!MediaSafety.isSafeExternalMediaUri(appContext, uri)) return@withContext null
 
+        readFromDiskCache(appContext, uriString)?.let { cached ->
+            ThumbnailCache.put(uriString, cached)
+            return@withContext cached
+        }
+
         thumbnailExtractorSemaphore.withPermit {
             ThumbnailCache.get(uriString)?.let { return@withPermit it }
-            val retriever = MediaMetadataRetriever()
-            val bmp = try {
-                retriever.setDataSource(appContext, uri)
-                if (isVideo) {
-                    val raw = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-                        retriever.getScaledFrameAtTime(
-                            2_000_000L,
-                            MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                            MAX_THUMBNAIL_DIM_PX,
-                            MAX_THUMBNAIL_DIM_PX
-                        )
-                    } else {
-                        null
-                    } ?: retriever.getFrameAtTime(2_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                        ?: retriever.frameAtTime
-                    raw?.let { scaleDownIfNeeded(it, MAX_THUMBNAIL_DIM_PX) }
-                } else {
-                    retriever.embeddedPicture?.let { decodeSampledBitmap(it, MAX_THUMBNAIL_DIM_PX) }
-                }
-            } catch (ce: CancellationException) {
-                throw ce
-            } catch (_: Exception) {
-                null
-            } finally {
-                runCatching { retriever.release() }
+            readFromDiskCache(appContext, uriString)?.let { cached ->
+                ThumbnailCache.put(uriString, cached)
+                return@withPermit cached
             }
-            if (bmp != null) {
+
+            var bmp: Bitmap? = null
+
+            if (isVideo && uri.scheme == ContentResolver.SCHEME_CONTENT && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val osThumb = runCatching {
+                    appContext.contentResolver.loadThumbnail(
+                        uri,
+                        Size(MAX_THUMBNAIL_DIM_PX, MAX_THUMBNAIL_DIM_PX),
+                        null
+                    )
+                }.getOrNull()
+                if (osThumb != null && !osThumb.isRecycled) {
+                    val scaled = scaleDownIfNeeded(osThumb, MAX_THUMBNAIL_DIM_PX)
+                    if (!isMostlySolidColor(scaled)) {
+                        bmp = scaled
+                    } else {
+                        bmp = scaled // Keep as fallback in case retriever also yields solid/null
+                    }
+                }
+            }
+
+            if (bmp == null || isMostlySolidColor(bmp)) {
+                val retriever = MediaMetadataRetriever()
+                val retrieved = try {
+                    if (uri.scheme == ContentResolver.SCHEME_FILE && !uri.path.isNullOrBlank()) {
+                        retriever.setDataSource(uri.path)
+                    } else {
+                        retriever.setDataSource(appContext, uri)
+                    }
+                    if (isVideo) {
+                        val durationUs = (retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                            ?.toLongOrNull() ?: 0L) * 1000L
+                        var best = if (bmp == null) extractScaledFrame(retriever, 1_000_000L) else null
+                        if (best == null || isMostlySolidColor(best)) {
+                            val candidateTimes = buildList {
+                                if (durationUs > 20_000_000L) add(15_000_000L)
+                                else if (durationUs > 4_000_000L) add(durationUs / 3L)
+                                if (durationUs > 45_000_000L) add(30_000_000L)
+                            }
+                            for (t in candidateTimes) {
+                                val alt = extractScaledFrame(retriever, t) ?: continue
+                                if (!isMostlySolidColor(alt)) {
+                                    best?.recycle()
+                                    best = alt
+                                    break
+                                } else if (best == null) {
+                                    best = alt
+                                } else {
+                                    alt.recycle()
+                                }
+                            }
+                        }
+                        if (best == null && bmp == null) {
+                            best = retriever.frameAtTime?.let { scaleDownIfNeeded(it, MAX_THUMBNAIL_DIM_PX) }
+                        }
+                        best
+                    } else {
+                        retriever.embeddedPicture?.let { decodeSampledBitmap(it, MAX_THUMBNAIL_DIM_PX) }
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (_: Exception) {
+                    null
+                } finally {
+                    runCatching { retriever.release() }
+                }
+
+                if (retrieved != null) {
+                    if (bmp == null || !isMostlySolidColor(retrieved)) {
+                        bmp?.recycle()
+                        bmp = retrieved
+                    } else {
+                        retrieved.recycle()
+                    }
+                }
+            }
+
+            if (bmp != null && !bmp.isRecycled) {
+                writeToDiskCache(appContext, uriString, bmp)
                 ThumbnailCache.put(uriString, bmp)
             }
             bmp
@@ -164,7 +325,7 @@ fun MediaThumbnail(
     val appContext = LocalContext.current.applicationContext
     var bitmap by remember(uri) { mutableStateOf(ThumbnailCache.get(uri)) }
 
-    LaunchedEffect(uri) {
+    LaunchedEffect(uri, isVideo, isStream) {
         if (bitmap == null && !isStream) {
             bitmap = extractBitmap(appContext, uri, isVideo, isStream)
         }

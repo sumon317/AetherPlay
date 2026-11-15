@@ -46,6 +46,8 @@ class SettingsViewModel(
     fun setAudioSwipeDownAction(action: AudioSwipeAction) = viewModelScope.launch { settingsRepository.setAudioSwipeDownAction(action) }
     fun setAudioSwipeUpAction(action: AudioSwipeAction) = viewModelScope.launch { settingsRepository.setAudioSwipeUpAction(action) }
     fun setAudioDoubleTapAction(action: AudioDoubleTapAction) = viewModelScope.launch { settingsRepository.setAudioDoubleTapAction(action) }
+    fun setMinVideoDurationSeconds(seconds: Int) = viewModelScope.launch { settingsRepository.setMinVideoDurationSeconds(seconds) }
+    fun setMinAudioDurationSeconds(seconds: Int) = viewModelScope.launch { settingsRepository.setMinAudioDurationSeconds(seconds) }
     fun updateSubtitlePreferences(transform: (SubtitlePreferences) -> SubtitlePreferences) =
         viewModelScope.launch { settingsRepository.updateSubtitlePreferences(transform) }
 

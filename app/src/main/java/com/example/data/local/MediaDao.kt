@@ -62,6 +62,15 @@ interface MediaDao {
     @Query("UPDATE media_items SET lastPlayedPositionMs = :positionMs, lastPlayedAt = :timestampMs WHERE uri = :uri")
     suspend fun updatePlaybackProgress(uri: String, positionMs: Long, timestampMs: Long)
 
+    @Query(
+        "UPDATE media_items SET " +
+            "durationMs = CASE WHEN durationMs <= 0 AND :durationMs > 0 THEN :durationMs ELSE durationMs END, " +
+            "width = CASE WHEN width <= 0 AND :width > 0 THEN :width ELSE width END, " +
+            "height = CASE WHEN height <= 0 AND :height > 0 THEN :height ELSE height END " +
+            "WHERE uri = :uri"
+    )
+    suspend fun updateMissingTechnicalMetadata(uri: String, durationMs: Long, width: Int, height: Int)
+
     @Query("UPDATE media_items SET externalSubtitleUri = :subtitleUri WHERE uri = :uri")
     suspend fun updateExternalSubtitle(uri: String, subtitleUri: String?)
 

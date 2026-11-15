@@ -63,6 +63,12 @@ class MediaRepository(
         mediaDao.updatePlaybackProgress(uri, positionMs, System.currentTimeMillis())
     }
 
+    suspend fun updateMissingTechnicalMetadata(uri: String, durationMs: Long, width: Int, height: Int) {
+        if (durationMs > 0L || (width > 0 && height > 0)) {
+            mediaDao.updateMissingTechnicalMetadata(uri, durationMs, width, height)
+        }
+    }
+
     suspend fun attachExternalSubtitle(mediaUri: String, subtitleUri: String?) {
         runCatching {
             if (subtitleUri != null) {
@@ -108,13 +114,8 @@ class MediaRepository(
     suspend fun importDocumentUris(uris: List<Uri>): List<MediaItemEntity> = withContext(Dispatchers.IO) {
         val resolver = context.contentResolver
         val imported = mutableListOf<MediaItemEntity>()
-        for (uri in uris) {
-            runCatching {
-                resolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            }
+        for (rawUri in uris) {
+            val uri = resolvePersistentMediaUri(resolver, rawUri)
             val item = extractMediaMetadata(resolver, uri, folderLabel = "Imported")
             if (item != null) {
                 mediaDao.upsertMedia(item)
@@ -129,25 +130,88 @@ class MediaRepository(
             return@withContext null
         }
         val resolver = context.contentResolver
-        runCatching {
-            resolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION
-            )
-        }
-        val existing = mediaDao.getMediaByUri(uri.toString())
+        val resolvedUri = resolvePersistentMediaUri(resolver, uri)
+        val existing = mediaDao.getMediaByUri(resolvedUri.toString())
         if (existing != null) return@withContext existing
 
-        val isHttp = uri.scheme?.lowercase(Locale.ROOT) in listOf("http", "https")
+        val isHttp = resolvedUri.scheme?.lowercase(Locale.ROOT) in listOf("http", "https")
         val item = if (isHttp) {
-            createStreamEntity(uri.toString(), null)
+            createStreamEntity(resolvedUri.toString(), null)
         } else {
-            extractMediaMetadata(resolver, uri, folderLabel = "External")
+            extractMediaMetadata(resolver, resolvedUri, folderLabel = "External")
         }
         if (item != null) {
             mediaDao.upsertMedia(item)
         }
         item
+    }
+
+    @Suppress("DEPRECATION")
+    private fun resolvePersistentMediaUri(resolver: ContentResolver, uri: Uri): Uri {
+        val persistable = runCatching {
+            resolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }.isSuccess
+        if (persistable || uri.scheme?.lowercase(Locale.ROOT) != "content") {
+            return uri
+        }
+
+        // Photo Picker / third-party content URIs often do not allow persistable grants;
+        // try resolving to a readable file:// path or canonical MediaStore URI.
+        val path = runCatching {
+            resolver.query(uri, arrayOf(MediaStore.MediaColumns.DATA), null, null, null)?.use { c ->
+                if (c.moveToFirst()) c.getString(0) else null
+            }
+        }.getOrNull()
+        if (!path.isNullOrBlank()) {
+            val file = File(path)
+            if (file.exists() && file.canRead() && !MediaSafety.isAppPrivateFile(context, file)) {
+                return Uri.fromFile(file)
+            }
+        }
+
+        val name = queryDisplayName(resolver, uri)
+        val size = queryFileSize(resolver, uri)
+        if (!name.isNullOrBlank() && size > 0L) {
+            val match = lookupMediaStoreUriByNameAndSize(resolver, name, size)
+            if (match != null) return match
+        }
+        return uri
+    }
+
+    @Suppress("DEPRECATION")
+    private fun lookupMediaStoreUriByNameAndSize(
+        resolver: ContentResolver,
+        displayName: String,
+        sizeBytes: Long
+    ): Uri? {
+        val collections = listOf(
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+        )
+        val projection = arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DATA)
+        val selection = "${MediaStore.MediaColumns.DISPLAY_NAME} = ? AND ${MediaStore.MediaColumns.SIZE} = ?"
+        val args = arrayOf(displayName, sizeBytes.toString())
+        for (collection in collections) {
+            val found = runCatching {
+                resolver.query(collection, projection, selection, args, null)?.use { c ->
+                    if (c.moveToFirst()) {
+                        val id = c.getLong(0)
+                        val dataPath = c.getString(1)
+                        val f = dataPath?.let { File(it) }
+                        if (f != null && f.exists() && f.canRead() && !MediaSafety.isAppPrivateFile(context, f)) {
+                            Uri.fromFile(f)
+                        } else {
+                            ContentUris.withAppendedId(collection, id)
+                        }
+                    } else null
+                }
+            }.getOrNull()
+            if (found != null) return found
+        }
+        return null
     }
 
     suspend fun importStreamUrl(url: String, customTitle: String?, isVideo: Boolean): MediaItemEntity? =
@@ -192,7 +256,8 @@ class MediaRepository(
         }
 
         val existingItems = mediaDao.getAllMediaOnce()
-        val existingUris = existingItems.mapTo(HashSet()) { it.uri }
+        val existingByUri = existingItems.associateBy { it.uri }
+        val existingUris = existingByUri.keys
 
         val mediaStoreEntries = queryMediaStoreEntries(
             includeVideo = allFilesGranted || hasVideoPerm,
@@ -235,14 +300,51 @@ class MediaRepository(
                                 queue.add(child to depth + 1)
                             }
                         } else if (child.isFile && child.length() > 0L && isSupportedMediaFile(child.name, "")) {
-                            val fileUri = Uri.fromFile(child).toString()
-                            if (fileUri in existingUris) {
-                                discovered += MediaItemEntity(uri = fileUri, title = child.name)
-                                continue
-                            }
-
                             val canonFile = runCatching { child.canonicalPath }.getOrNull()
                             val storeMeta = (canonFile?.let { byPath[it] }) ?: byPath[child.absolutePath]
+                            val resolvedUri = if (child.canRead()) {
+                                Uri.fromFile(child).toString()
+                            } else {
+                                storeMeta?.contentUri ?: continue
+                            }
+                            val existingItem = existingByUri[resolvedUri]
+                            if (existingItem != null) {
+                                discovered += MediaItemEntity(uri = resolvedUri, title = child.name)
+                                if (existingItem.durationMs <= 0L || (existingItem.isVideo && (existingItem.width <= 0 || existingItem.height <= 0))) {
+                                    var backfilledDuration = storeMeta?.durationMs ?: 0L
+                                    var backfilledWidth = storeMeta?.width ?: 0
+                                    var backfilledHeight = storeMeta?.height ?: 0
+                                    if (backfilledDuration <= 0L && retrieverBudget > 0) {
+                                        retrieverBudget--
+                                        val retriever = MediaMetadataRetriever()
+                                        try {
+                                            retriever.setDataSource(child.absolutePath)
+                                            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                                                ?.toLongOrNull()?.let { backfilledDuration = it }
+                                            if (existingItem.isVideo) {
+                                                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                                                    ?.toIntOrNull()?.let { backfilledWidth = it }
+                                                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                                                    ?.toIntOrNull()?.let { backfilledHeight = it }
+                                            }
+                                        } catch (ce: CancellationException) {
+                                            throw ce
+                                        } catch (_: Exception) {
+                                        } finally {
+                                            runCatching { retriever.release() }
+                                        }
+                                    }
+                                    if (backfilledDuration > 0L || (backfilledWidth > 0 && backfilledHeight > 0)) {
+                                        mediaDao.updateMissingTechnicalMetadata(
+                                            uri = resolvedUri,
+                                            durationMs = backfilledDuration,
+                                            width = backfilledWidth,
+                                            height = backfilledHeight
+                                        )
+                                    }
+                                }
+                                continue
+                            }
                             val folderName = child.parentFile?.name?.takeIf { it.isNotBlank() } ?: "Internal Storage"
                             val mime = storeMeta?.mimeType?.takeIf { it.isNotBlank() } ?: guessMimeFromName(child.name)
                             val isVideo = storeMeta?.isVideo ?: isVideoMedia(child.name, mime)
@@ -288,7 +390,7 @@ class MediaRepository(
                             }
 
                             discovered += MediaItemEntity(
-                                uri = fileUri,
+                                uri = resolvedUri,
                                 title = title,
                                 artist = artist,
                                 album = album,
