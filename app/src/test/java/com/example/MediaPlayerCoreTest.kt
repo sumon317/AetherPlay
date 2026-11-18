@@ -1,26 +1,22 @@
 package com.example
 
-import com.example.data.local.AudioDoubleTapAction
-import com.example.data.local.AudioSwipeAction
 import com.example.data.local.MediaItemEntity
-import com.example.data.local.UserPreferences
 import com.example.data.repository.MediaRepository
 import com.example.player.EqualizerEngine
 import com.example.player.EqualizerUiState
-import com.example.player.PlayerControllerHolder
+import com.example.player.SmartQueueEngine
 import com.example.player.SubtitleParser
 import com.example.player.TimedSubtitleCue
 import com.example.ui.components.formatDuration
 import com.example.ui.components.formatFileSize
 import com.example.ui.components.formatResolution
 import com.example.ui.components.formatSignedDeltaSeconds
-import com.example.ui.viewmodel.LibraryViewModel
-import com.example.ui.viewmodel.MediaSortOrder
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.random.Random
 
 class MediaPlayerCoreTest {
 
@@ -37,115 +33,6 @@ class MediaPlayerCoreTest {
         assertFalse(MediaRepository.isVideoMedia("podcast.opus", ""))
 
         assertFalse(MediaRepository.isSupportedMediaFile("readme.txt", "text/plain"))
-        assertEquals("audio/flac", MediaRepository.guessMimeFromName("track.flac"))
-        assertEquals("video/x-matroska", MediaRepository.guessMimeFromName("film.mkv"))
-    }
-
-    @Test
-    fun `folder view and music player gesture defaults match requirements`() {
-        val defaults = UserPreferences()
-        assertTrue(defaults.videoFolderView)
-        assertTrue(defaults.audioFolderView)
-        assertTrue(defaults.rotateAudioArtwork)
-        assertEquals(AudioSwipeAction.MINIMISE, defaults.audioSwipeDownAction)
-        assertEquals(AudioSwipeAction.OPEN_QUEUE, defaults.audioSwipeUpAction)
-        assertEquals(AudioDoubleTapAction.TOGGLE_LIKE, defaults.audioDoubleTapAction)
-        assertEquals(4, AudioSwipeAction.entries.size)
-        assertEquals(2, AudioDoubleTapAction.entries.size)
-        assertTrue(AudioDoubleTapAction.entries.contains(AudioDoubleTapAction.PLAY_PAUSE))
-    }
-
-    @Test
-    fun `buildFolders groups file uris by parent folder and formats storage paths`() {
-        val items = listOf(
-            MediaItemEntity(
-                uri = "file:///storage/emulated/0/Movies/Action/trailer.mp4",
-                title = "Trailer",
-                durationMs = 90_000L,
-                fileSizeBytes = 10_000_000L,
-                isVideo = true,
-                folderName = "Action"
-            ),
-            MediaItemEntity(
-                uri = "file:///storage/emulated/0/Movies/Action/behind_scenes.mkv",
-                title = "Behind Scenes",
-                durationMs = 30_000L,
-                fileSizeBytes = 4_000_000L,
-                isVideo = true,
-                folderName = "Action"
-            ),
-            MediaItemEntity(
-                uri = "file:///storage/ABCD-1234/Download/concert.mp4",
-                title = "Concert",
-                durationMs = 120_000L,
-                fileSizeBytes = 25_000_000L,
-                isVideo = true,
-                folderName = "Download"
-            ),
-            MediaItemEntity(
-                uri = "file:///storage/emulated/0/Music/My%20Songs/song.mp3",
-                title = "Song",
-                durationMs = 180_000L,
-                fileSizeBytes = 5_000_000L,
-                isVideo = false,
-                folderName = "My Songs"
-            ),
-            MediaItemEntity(
-                uri = "https://example.com/live.m3u8",
-                title = "Live Feed",
-                isVideo = true,
-                folderName = "Streams",
-                isStream = true
-            )
-        )
-
-        val folders = LibraryViewModel.buildFolders(items, isVideo = true, sortOrder = MediaSortOrder.NAME_ASC)
-        assertEquals(4, folders.size)
-
-        val actionFolder = folders.first { it.name == "Action" }
-        assertEquals("/storage/emulated/0/Movies/Action", actionFolder.key)
-        assertEquals("Internal Storage/Movies/Action", actionFolder.pathLabel)
-        assertEquals(2, actionFolder.items.size)
-        assertEquals(120_000L, actionFolder.totalDurationMs)
-        assertEquals(14_000_000L, actionFolder.totalSizeBytes)
-        assertEquals("Behind Scenes", actionFolder.items.first().title)
-
-        val mySongsFolder = folders.first { it.name == "My Songs" }
-        assertEquals("/storage/emulated/0/Music/My Songs", mySongsFolder.key)
-        assertEquals("Internal Storage/Music/My Songs", mySongsFolder.pathLabel)
-
-        val sdFolder = folders.first { it.name == "Download" }
-        assertEquals("SD Card/Download", sdFolder.pathLabel)
-
-        val streamFolder = folders.first { it.name == "Streams" }
-        assertEquals("virtual:streams", streamFolder.key)
-        assertEquals("Network Streams", streamFolder.pathLabel)
-    }
-
-    @Test
-    fun `windowQueueAroundIndex bounds massive queues without losing selected item`() {
-        val largeLibrary = (0 until 1000).map { idx ->
-            MediaItemEntity(uri = "file:///storage/emulated/0/Music/track_$idx.mp3", title = "Track $idx", isVideo = false)
-        }
-
-        val (midWindow, midMapped) = PlayerControllerHolder.windowQueueAroundIndex(largeLibrary, 500)
-        assertEquals(PlayerControllerHolder.MAX_PLAYER_QUEUE_SIZE, midWindow.size)
-        assertEquals("Track 500", midWindow[midMapped].title)
-
-        val (headWindow, headMapped) = PlayerControllerHolder.windowQueueAroundIndex(largeLibrary, 3)
-        assertEquals(PlayerControllerHolder.MAX_PLAYER_QUEUE_SIZE, headWindow.size)
-        assertEquals(3, headMapped)
-        assertEquals("Track 3", headWindow[headMapped].title)
-
-        val (tailWindow, tailMapped) = PlayerControllerHolder.windowQueueAroundIndex(largeLibrary, 998)
-        assertEquals(PlayerControllerHolder.MAX_PLAYER_QUEUE_SIZE, tailWindow.size)
-        assertEquals(198, tailMapped)
-        assertEquals("Track 998", tailWindow[tailMapped].title)
-
-        val small = largeLibrary.take(25)
-        val (smallWindow, smallMapped) = PlayerControllerHolder.windowQueueAroundIndex(small, 10)
-        assertEquals(25, smallWindow.size)
-        assertEquals(10, smallMapped)
     }
 
     @Test
@@ -183,6 +70,63 @@ class MediaPlayerCoreTest {
     }
 
     @Test
+    fun `equalizer engine creates, applies, updates, and cleans up custom sound profiles`() {
+        val engine = EqualizerEngine()
+        engine.setBandLevel(0, 600)
+        engine.setBandLevel(4, -300)
+        engine.setBassBoost(500)
+        engine.setVirtualizer(400)
+        engine.setLoudnessGain(250)
+
+        val snapshot = engine.createCustomProfileSnapshot("Studio Late Night")
+        assertEquals("Studio Late Night", snapshot.name)
+        assertEquals(600, snapshot.bandLevelsMb[0])
+        assertEquals(-300, snapshot.bandLevelsMb[4])
+        assertEquals(500, snapshot.bassBoost)
+        assertEquals(400, snapshot.virtualizer)
+        assertEquals(250, snapshot.loudnessGainMb)
+        assertEquals(snapshot.id, engine.state.value.activeCustomProfileId)
+        assertFalse(engine.state.value.hasUnsavedChanges)
+
+        engine.resetBandToFlat(0)
+        assertEquals(0, engine.state.value.bands[0].levelMb)
+        assertTrue(engine.state.value.hasUnsavedChanges)
+
+        engine.applyCustomProfile(snapshot)
+        assertEquals(600, engine.state.value.bands[0].levelMb)
+        assertFalse(engine.state.value.hasUnsavedChanges)
+
+        engine.onCustomProfileDeleted(snapshot.id)
+        assertNull(engine.state.value.activeCustomProfileId)
+    }
+
+    @Test
+    fun `smart queue engine preserves current track, diversifies order, and blends same-type discoveries`() {
+        val track1 = MediaItemEntity(uri = "file:///a1.flac", title = "A1", artist = "Artist A", folderName = "Rock", isVideo = false)
+        val track2 = MediaItemEntity(uri = "file:///a2.flac", title = "A2", artist = "Artist A", folderName = "Rock", isVideo = false)
+        val track3 = MediaItemEntity(uri = "file:///b1.flac", title = "B1", artist = "Artist B", folderName = "Jazz", isVideo = false, isLiked = true)
+        val track4 = MediaItemEntity(uri = "file:///c1.flac", title = "C1", artist = "Artist C", folderName = "Synth", isVideo = false)
+
+        val discoveryAudio = MediaItemEntity(uri = "file:///d1.flac", title = "D1", artist = "Artist D", folderName = "Ambient", isVideo = false, isLiked = true)
+        val unrelatedVideo = MediaItemEntity(uri = "file:///v1.mp4", title = "Movie", artist = "Cinema", folderName = "Movies", isVideo = true, isLiked = true)
+
+        val result = SmartQueueEngine.buildSmartQueue(
+            currentItem = track1,
+            baseQueue = listOf(track1, track2, track3, track4),
+            libraryPool = listOf(track1, track2, track3, track4, discoveryAudio, unrelatedVideo),
+            random = Random(42)
+        )
+
+        assertEquals(track1.uri, result.orderedQueue.first().uri)
+        assertTrue(result.orderedQueue.all { !it.isVideo })
+        assertFalse(result.orderedQueue.any { it.uri == unrelatedVideo.uri })
+        assertTrue(result.smartPickUris.contains(discoveryAudio.uri))
+        assertTrue(result.orderedQueue.any { it.uri == discoveryAudio.uri })
+        // Track right after track1 (Artist A) should prefer a different artist rather than track2 (Artist A)
+        assertFalse(result.orderedQueue[1].artist == "Artist A")
+    }
+
+    @Test
     fun `media formatters format duration, delta, size, and resolution`() {
         assertEquals("02:05", formatDuration(125_000L))
         assertEquals("1:01:01", formatDuration(3_661_000L))
@@ -191,63 +135,5 @@ class MediaPlayerCoreTest {
         assertEquals("4K", formatResolution(3840, 2160))
         assertEquals("1080p", formatResolution(1920, 1080))
         assertEquals("1.5 MB", formatFileSize(1_572_864L))
-    }
-
-    @Test
-    fun `minimum duration filter hides short clips while preserving streams and unknown durations`() {
-        val defaults = UserPreferences()
-        assertEquals(0, defaults.minVideoDurationSeconds)
-        assertEquals(0, defaults.minAudioDurationSeconds)
-
-        val shortClip = MediaItemEntity(
-            uri = "file:///storage/emulated/0/WhatsApp/status.mp4",
-            title = "Status",
-            durationMs = 12_000L,
-            isVideo = true
-        )
-        val longMovie = MediaItemEntity(
-            uri = "file:///storage/emulated/0/Movies/film.mkv",
-            title = "Film",
-            durationMs = 600_000L,
-            isVideo = true
-        )
-        val exactBoundary = MediaItemEntity(
-            uri = "file:///storage/emulated/0/Movies/intro.mp4",
-            title = "Intro",
-            durationMs = 30_000L,
-            isVideo = true
-        )
-        val unknownDuration = MediaItemEntity(
-            uri = "file:///storage/emulated/0/Movies/unindexed.mkv",
-            title = "Unindexed",
-            durationMs = 0L,
-            isVideo = true
-        )
-        val liveStream = MediaItemEntity(
-            uri = "https://example.com/live.m3u8",
-            title = "Live",
-            durationMs = 0L,
-            isVideo = true,
-            isStream = true
-        )
-
-        val all = listOf(shortClip, longMovie, exactBoundary, unknownDuration, liveStream)
-
-        // Filter Off (0s) shows everything
-        assertEquals(5, LibraryViewModel.filterByMinDuration(all, 0).size)
-
-        // 30s filter hides 12s status clip, keeps 30s, 600s, unknown, and stream
-        val filtered30 = LibraryViewModel.filterByMinDuration(all, 30)
-        assertEquals(4, filtered30.size)
-        assertFalse(filtered30.contains(shortClip))
-        assertTrue(filtered30.contains(exactBoundary))
-        assertTrue(filtered30.contains(longMovie))
-        assertTrue(filtered30.contains(unknownDuration))
-        assertTrue(filtered30.contains(liveStream))
-
-        // 60s filter hides both 12s and 30s clips
-        val filtered60 = LibraryViewModel.filterByMinDuration(all, 60)
-        assertEquals(3, filtered60.size)
-        assertFalse(filtered60.contains(exactBoundary))
     }
 }

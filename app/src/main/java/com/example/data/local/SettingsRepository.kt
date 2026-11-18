@@ -10,6 +10,8 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import androidx.media3.common.Player
+import com.example.player.ShuffleMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
@@ -54,18 +56,6 @@ enum class SubtitleEdgeStyle(val label: String) {
     NONE("Clean Plain")
 }
 
-enum class AudioSwipeAction(val label: String) {
-    MINIMISE("Minimise"),
-    OPEN_QUEUE("Open Queue"),
-    OPEN_EQUALIZER("Open Equalizer"),
-    OPEN_LIKED_SONGS("Open Liked Songs")
-}
-
-enum class AudioDoubleTapAction(val label: String) {
-    TOGGLE_LIKE("Like / Dislike"),
-    PLAY_PAUSE("Play / Pause")
-}
-
 data class SubtitlePreferences(
     val fontSizeSp: Float = 18f,
     val fontStyle: SubtitleFontStyle = SubtitleFontStyle.SANS,
@@ -94,14 +84,8 @@ data class UserPreferences(
     val doubleTapSeek: Boolean = true,
     val longPress2xSpeed: Boolean = true,
     val videoGridMode: Boolean = false,
-    val videoFolderView: Boolean = true,
-    val audioFolderView: Boolean = true,
-    val rotateAudioArtwork: Boolean = true,
-    val audioSwipeDownAction: AudioSwipeAction = AudioSwipeAction.MINIMISE,
-    val audioSwipeUpAction: AudioSwipeAction = AudioSwipeAction.OPEN_QUEUE,
-    val audioDoubleTapAction: AudioDoubleTapAction = AudioDoubleTapAction.TOGGLE_LIKE,
-    val minVideoDurationSeconds: Int = 0,
-    val minAudioDurationSeconds: Int = 0,
+    val shuffleMode: ShuffleMode = ShuffleMode.OFF,
+    val repeatMode: Int = Player.REPEAT_MODE_OFF,
     val subtitle: SubtitlePreferences = SubtitlePreferences()
 )
 
@@ -125,14 +109,8 @@ class SettingsRepository(private val context: Context) {
         val DOUBLE_TAP_SEEK = booleanPreferencesKey("double_tap_seek")
         val LONG_PRESS_2X = booleanPreferencesKey("long_press_2x")
         val VIDEO_GRID_MODE = booleanPreferencesKey("video_grid_mode")
-        val VIDEO_FOLDER_VIEW = booleanPreferencesKey("video_folder_view")
-        val AUDIO_FOLDER_VIEW = booleanPreferencesKey("audio_folder_view")
-        val ROTATE_AUDIO_ARTWORK = booleanPreferencesKey("rotate_audio_artwork")
-        val AUDIO_SWIPE_DOWN_ACTION = stringPreferencesKey("audio_swipe_down_action")
-        val AUDIO_SWIPE_UP_ACTION = stringPreferencesKey("audio_swipe_up_action")
-        val AUDIO_DOUBLE_TAP_ACTION = stringPreferencesKey("audio_double_tap_action")
-        val MIN_VIDEO_DURATION_SEC = intPreferencesKey("min_video_duration_seconds")
-        val MIN_AUDIO_DURATION_SEC = intPreferencesKey("min_audio_duration_seconds")
+        val SHUFFLE_MODE = stringPreferencesKey("playback_shuffle_mode")
+        val REPEAT_MODE = intPreferencesKey("playback_repeat_mode")
 
         val SUB_FONT_SIZE = floatPreferencesKey("sub_font_size")
         val SUB_FONT_STYLE = stringPreferencesKey("sub_font_style")
@@ -173,20 +151,15 @@ class SettingsRepository(private val context: Context) {
             doubleTapSeek = prefs[Keys.DOUBLE_TAP_SEEK] ?: true,
             longPress2xSpeed = prefs[Keys.LONG_PRESS_2X] ?: true,
             videoGridMode = prefs[Keys.VIDEO_GRID_MODE] ?: false,
-            videoFolderView = prefs[Keys.VIDEO_FOLDER_VIEW] ?: true,
-            audioFolderView = prefs[Keys.AUDIO_FOLDER_VIEW] ?: true,
-            rotateAudioArtwork = prefs[Keys.ROTATE_AUDIO_ARTWORK] ?: true,
-            audioSwipeDownAction = prefs[Keys.AUDIO_SWIPE_DOWN_ACTION]?.let {
-                runCatching { AudioSwipeAction.valueOf(it) }.getOrNull()
-            } ?: AudioSwipeAction.MINIMISE,
-            audioSwipeUpAction = prefs[Keys.AUDIO_SWIPE_UP_ACTION]?.let {
-                runCatching { AudioSwipeAction.valueOf(it) }.getOrNull()
-            } ?: AudioSwipeAction.OPEN_QUEUE,
-            audioDoubleTapAction = prefs[Keys.AUDIO_DOUBLE_TAP_ACTION]?.let {
-                runCatching { AudioDoubleTapAction.valueOf(it) }.getOrNull()
-            } ?: AudioDoubleTapAction.TOGGLE_LIKE,
-            minVideoDurationSeconds = (prefs[Keys.MIN_VIDEO_DURATION_SEC] ?: 0).coerceIn(0, 3600),
-            minAudioDurationSeconds = (prefs[Keys.MIN_AUDIO_DURATION_SEC] ?: 0).coerceIn(0, 3600),
+            shuffleMode = prefs[Keys.SHUFFLE_MODE]?.let {
+                runCatching { ShuffleMode.valueOf(it) }.getOrNull()
+            } ?: ShuffleMode.OFF,
+            repeatMode = (prefs[Keys.REPEAT_MODE] ?: Player.REPEAT_MODE_OFF).let { mode ->
+                when (mode) {
+                    Player.REPEAT_MODE_ALL, Player.REPEAT_MODE_ONE -> mode
+                    else -> Player.REPEAT_MODE_OFF
+                }
+            },
             subtitle = SubtitlePreferences(
                 fontSizeSp = prefs[Keys.SUB_FONT_SIZE] ?: 18f,
                 fontStyle = prefs[Keys.SUB_FONT_STYLE]?.let {
@@ -285,66 +258,16 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[Keys.VIDEO_GRID_MODE] = grid }
     }
 
-    suspend fun toggleVideoGridMode(): Boolean {
-        var next = false
-        context.dataStore.edit { prefs ->
-            val current = prefs[Keys.VIDEO_GRID_MODE] ?: false
-            next = !current
-            prefs[Keys.VIDEO_GRID_MODE] = next
+    suspend fun setShuffleMode(mode: ShuffleMode) {
+        context.dataStore.edit { it[Keys.SHUFFLE_MODE] = mode.name }
+    }
+
+    suspend fun setRepeatMode(mode: Int) {
+        val valid = when (mode) {
+            Player.REPEAT_MODE_ALL, Player.REPEAT_MODE_ONE -> mode
+            else -> Player.REPEAT_MODE_OFF
         }
-        return next
-    }
-
-    suspend fun setVideoFolderView(folderView: Boolean) {
-        context.dataStore.edit { it[Keys.VIDEO_FOLDER_VIEW] = folderView }
-    }
-
-    suspend fun toggleVideoFolderView(): Boolean {
-        var next = true
-        context.dataStore.edit { prefs ->
-            val current = prefs[Keys.VIDEO_FOLDER_VIEW] ?: true
-            next = !current
-            prefs[Keys.VIDEO_FOLDER_VIEW] = next
-        }
-        return next
-    }
-
-    suspend fun setAudioFolderView(folderView: Boolean) {
-        context.dataStore.edit { it[Keys.AUDIO_FOLDER_VIEW] = folderView }
-    }
-
-    suspend fun toggleAudioFolderView(): Boolean {
-        var next = true
-        context.dataStore.edit { prefs ->
-            val current = prefs[Keys.AUDIO_FOLDER_VIEW] ?: true
-            next = !current
-            prefs[Keys.AUDIO_FOLDER_VIEW] = next
-        }
-        return next
-    }
-
-    suspend fun setRotateAudioArtwork(rotate: Boolean) {
-        context.dataStore.edit { it[Keys.ROTATE_AUDIO_ARTWORK] = rotate }
-    }
-
-    suspend fun setAudioSwipeDownAction(action: AudioSwipeAction) {
-        context.dataStore.edit { it[Keys.AUDIO_SWIPE_DOWN_ACTION] = action.name }
-    }
-
-    suspend fun setAudioSwipeUpAction(action: AudioSwipeAction) {
-        context.dataStore.edit { it[Keys.AUDIO_SWIPE_UP_ACTION] = action.name }
-    }
-
-    suspend fun setAudioDoubleTapAction(action: AudioDoubleTapAction) {
-        context.dataStore.edit { it[Keys.AUDIO_DOUBLE_TAP_ACTION] = action.name }
-    }
-
-    suspend fun setMinVideoDurationSeconds(seconds: Int) {
-        context.dataStore.edit { it[Keys.MIN_VIDEO_DURATION_SEC] = seconds.coerceIn(0, 3600) }
-    }
-
-    suspend fun setMinAudioDurationSeconds(seconds: Int) {
-        context.dataStore.edit { it[Keys.MIN_AUDIO_DURATION_SEC] = seconds.coerceIn(0, 3600) }
+        context.dataStore.edit { it[Keys.REPEAT_MODE] = valid }
     }
 
     suspend fun updateSubtitlePreferences(transform: (SubtitlePreferences) -> SubtitlePreferences) {

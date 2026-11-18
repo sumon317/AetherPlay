@@ -1,13 +1,9 @@
 package com.example.player
 
 import android.content.ComponentName
-import android.content.ContentUris
 import android.content.Context
 import android.net.Uri
 import android.os.Bundle
-import android.provider.MediaStore
-import java.io.File
-import java.io.FileNotFoundException
 import androidx.annotation.OptIn
 import androidx.core.content.ContextCompat
 import androidx.media3.common.C
@@ -38,7 +34,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 data class TrackOption(
     val groupIndex: Int,
@@ -67,6 +62,8 @@ data class PlaybackUiState(
     val playbackPitch: Float = 1.0f,
     val repeatMode: Int = Player.REPEAT_MODE_OFF,
     val shuffleEnabled: Boolean = false,
+    val shuffleMode: ShuffleMode = ShuffleMode.OFF,
+    val smartPickUris: Set<String> = emptySet(),
     val audioTracks: List<TrackOption> = emptyList(),
     val subtitleTracks: List<TrackOption> = emptyList(),
     val subtitlesEnabled: Boolean = true,
@@ -99,102 +96,55 @@ class PlayerControllerHolder(
 
     private var positionJob: Job? = null
     private var sleepTimerJob: Job? = null
-    private var playQueueJob: Job? = null
     private var lastSavedPositionTick = 0L
-    private var attachedController: MediaController? = null
-    private var attachedListener: Player.Listener? = null
+    private var originalQueue: List<MediaItemEntity> = emptyList()
 
     fun connect() {
-        val current = _controller.value
-        if (current != null && current.isConnected) return
-        val existingFuture = controllerFuture
-        if (existingFuture != null && !existingFuture.isDone) return
-
-        if (existingFuture != null) {
-            runCatching { MediaController.releaseFuture(existingFuture) }
-            controllerFuture = null
-        }
-        _controller.value = null
-
+        if (controllerFuture != null) return
         val sessionToken = SessionToken(context, ComponentName(context, PlaybackService::class.java))
-        val future = MediaController.Builder(context, sessionToken)
-            .setListener(object : MediaController.Listener {
-                override fun onDisconnected(controller: MediaController) {
-                    scope.launch {
-                        if (_controller.value == controller) {
-                            detachCurrentListener()
-                            _controller.value = null
-                            controllerFuture = null
-                            positionJob?.cancel()
-                            sleepTimerJob?.cancel()
-                            _uiState.value = PlaybackUiState()
-                        }
-                    }
-                }
-            })
-            .buildAsync()
+        val future = MediaController.Builder(context, sessionToken).buildAsync()
         controllerFuture = future
         future.addListener(
             {
                 runCatching {
                     val ctrl = future.get()
-                    if (controllerFuture == future) {
-                        _controller.value = ctrl
-                        attachListener(ctrl)
+                    _controller.value = ctrl
+                    attachListener(ctrl)
+                    scope.launch {
+                        val prefs = settingsRepository.preferencesFlow.first()
+                        if (ctrl.mediaItemCount == 0) {
+                            ctrl.repeatMode = prefs.repeatMode
+                            ctrl.shuffleModeEnabled = prefs.shuffleMode == ShuffleMode.STANDARD
+                        }
+                        _uiState.update {
+                            it.copy(
+                                shuffleMode = prefs.shuffleMode,
+                                shuffleEnabled = prefs.shuffleMode != ShuffleMode.OFF,
+                                repeatMode = if (ctrl.mediaItemCount > 0) ctrl.repeatMode else prefs.repeatMode
+                            )
+                        }
                         syncFullState(ctrl)
-                        startPositionTicker()
-                    } else {
-                        ctrl.release()
                     }
-                }.onFailure {
-                    if (controllerFuture == future) {
-                        controllerFuture = null
-                        _controller.value = null
-                    }
+                    startPositionTicker()
                 }
             },
             ContextCompat.getMainExecutor(context)
         )
     }
 
-    private fun detachCurrentListener() {
-        val prevCtrl = attachedController
-        val prevListener = attachedListener
-        if (prevCtrl != null && prevListener != null) {
-            runCatching { prevCtrl.removeListener(prevListener) }
-        }
-        attachedController = null
-        attachedListener = null
-    }
-
     private fun attachListener(ctrl: MediaController) {
-        detachCurrentListener()
-        val listener = object : Player.Listener {
+        ctrl.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _uiState.update { it.copy(isPlaying = isPlaying) }
                 if (!isPlaying) persistCurrentProgress()
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
-                val dur = ctrl.duration.coerceAtLeast(0L)
                 _uiState.update {
                     it.copy(
                         isBuffering = playbackState == Player.STATE_BUFFERING,
-                        durationMs = dur
+                        durationMs = ctrl.duration.coerceAtLeast(0L)
                     )
-                }
-                if (playbackState == Player.STATE_READY && dur > 0L) {
-                    val uri = ctrl.currentMediaItem?.mediaId
-                    if (uri != null) {
-                        scope.launch {
-                            mediaRepository.updateMissingTechnicalMetadata(
-                                uri = uri,
-                                durationMs = dur,
-                                width = _uiState.value.videoWidth,
-                                height = _uiState.value.videoHeight
-                            )
-                        }
-                    }
                 }
             }
 
@@ -234,38 +184,31 @@ class PlayerControllerHolder(
             }
 
             override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
-                _uiState.update { it.copy(shuffleEnabled = shuffleModeEnabled) }
+                _uiState.update { current ->
+                    val resolvedMode = when {
+                        shuffleModeEnabled -> ShuffleMode.STANDARD
+                        current.shuffleMode == ShuffleMode.SMART -> ShuffleMode.SMART
+                        else -> ShuffleMode.OFF
+                    }
+                    current.copy(
+                        shuffleEnabled = resolvedMode != ShuffleMode.OFF,
+                        shuffleMode = resolvedMode
+                    )
+                }
             }
 
             override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
                 _uiState.update {
                     it.copy(videoWidth = videoSize.width, videoHeight = videoSize.height)
                 }
-                if (videoSize.width > 0 && videoSize.height > 0) {
-                    val uri = ctrl.currentMediaItem?.mediaId
-                    val dur = ctrl.duration.coerceAtLeast(0L)
-                    if (uri != null) {
-                        scope.launch {
-                            mediaRepository.updateMissingTechnicalMetadata(
-                                uri = uri,
-                                durationMs = dur,
-                                width = videoSize.width,
-                                height = videoSize.height
-                            )
-                        }
-                    }
-                }
             }
 
             override fun onPlayerError(error: PlaybackException) {
                 _uiState.update {
-                    it.copy(errorMessage = formatPlaybackError(error))
+                    it.copy(errorMessage = error.localizedMessage ?: "Playback error (${error.errorCodeName})")
                 }
             }
-        }
-        attachedController = ctrl
-        attachedListener = listener
-        ctrl.addListener(listener)
+        })
     }
 
     private fun startPositionTicker() {
@@ -315,23 +258,34 @@ class PlayerControllerHolder(
     fun playQueue(items: List<MediaItemEntity>, startIndex: Int = 0, resumeSavedPosition: Boolean = true) {
         if (items.isEmpty()) return
         val safeIndex = startIndex.coerceIn(0, items.lastIndex)
-        val (windowedItems, mappedIndex) = windowQueueAroundIndex(items, safeIndex)
-        playQueueJob?.cancel()
-        playQueueJob = scope.launch {
+        scope.launch {
             connect()
             var waitCount = 0
-            while ((_controller.value == null || _controller.value?.isConnected != true) && waitCount < 40) {
+            while (_controller.value == null && waitCount < 30) {
                 delay(50L)
                 waitCount++
             }
-            val ctrl = _controller.value?.takeIf { it.isConnected } ?: return@launch
+            val ctrl = _controller.value ?: return@launch
             val prefs = settingsRepository.preferencesFlow.first()
             val shouldResume = resumeSavedPosition && prefs.resumePlayback
+            originalQueue = items
 
-            val mediaItems = withContext(Dispatchers.IO) {
-                windowedItems.map { entity -> buildMediaItem(entity) }
+            val targetItem = items[safeIndex]
+            val activeShuffleMode = prefs.shuffleMode
+            val smartResult = if (activeShuffleMode == ShuffleMode.SMART) {
+                val libraryPool = runCatching { mediaRepository.recentFlow.first() }.getOrDefault(emptyList())
+                SmartQueueEngine.buildSmartQueue(
+                    currentItem = targetItem,
+                    baseQueue = items,
+                    libraryPool = libraryPool
+                )
+            } else {
+                null
             }
-            val targetItem = windowedItems[mappedIndex]
+
+            val finalQueue = smartResult?.orderedQueue ?: items
+            val finalStartIndex = if (smartResult != null) 0 else safeIndex
+            val mediaItems = finalQueue.map { entity -> buildMediaItem(entity) }
             val startPos = if (shouldResume && targetItem.lastPlayedPositionMs > 2000L &&
                 (targetItem.durationMs <= 0L || targetItem.lastPlayedPositionMs < targetItem.durationMs - 5000L)
             ) {
@@ -342,8 +296,12 @@ class PlayerControllerHolder(
 
             _uiState.update {
                 it.copy(
-                    queue = windowedItems,
-                    currentQueueIndex = mappedIndex,
+                    queue = finalQueue,
+                    currentQueueIndex = finalStartIndex,
+                    shuffleMode = activeShuffleMode,
+                    shuffleEnabled = activeShuffleMode != ShuffleMode.OFF,
+                    smartPickUris = smartResult?.smartPickUris.orEmpty(),
+                    repeatMode = prefs.repeatMode,
                     errorMessage = null,
                     abLoopStartMs = null,
                     abLoopEndMs = null,
@@ -357,7 +315,9 @@ class PlayerControllerHolder(
                 _uiState.update { it.copy(externalCues = emptyList()) }
             }
 
-            ctrl.setMediaItems(mediaItems, mappedIndex, startPos)
+            ctrl.repeatMode = prefs.repeatMode
+            ctrl.shuffleModeEnabled = activeShuffleMode == ShuffleMode.STANDARD
+            ctrl.setMediaItems(mediaItems, finalStartIndex, startPos)
             ctrl.prepare()
             ctrl.play()
             syncFullState(ctrl)
@@ -376,11 +336,18 @@ class PlayerControllerHolder(
     fun stopAndClear() {
         persistCurrentProgress()
         sleepTimerJob?.cancel()
+        originalQueue = emptyList()
         _controller.value?.let { ctrl ->
             ctrl.stop()
             ctrl.clearMediaItems()
         }
-        _uiState.value = PlaybackUiState()
+        _uiState.update {
+            PlaybackUiState(
+                repeatMode = it.repeatMode,
+                shuffleMode = it.shuffleMode,
+                shuffleEnabled = it.shuffleMode != ShuffleMode.OFF
+            )
+        }
     }
 
     fun seekTo(positionMs: Long) {
@@ -433,26 +400,124 @@ class PlayerControllerHolder(
     }
 
     fun cycleRepeatMode() {
-        val ctrl = _controller.value
-        val currentMode = ctrl?.repeatMode ?: _uiState.value.repeatMode
-        val nextMode = when (currentMode) {
+        val next = when (_uiState.value.repeatMode) {
             Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
             Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
             else -> Player.REPEAT_MODE_OFF
         }
-        if (ctrl != null) {
-            ctrl.repeatMode = nextMode
+        setRepeatMode(next)
+    }
+
+    fun setRepeatMode(mode: Int) {
+        val valid = when (mode) {
+            Player.REPEAT_MODE_ALL, Player.REPEAT_MODE_ONE -> mode
+            else -> Player.REPEAT_MODE_OFF
         }
-        _uiState.update { it.copy(repeatMode = nextMode) }
+        _controller.value?.repeatMode = valid
+        _uiState.update { it.copy(repeatMode = valid) }
+        scope.launch {
+            settingsRepository.setRepeatMode(valid)
+        }
     }
 
     fun toggleShuffle() {
-        val ctrl = _controller.value
-        val nextShuffle = !(ctrl?.shuffleModeEnabled ?: _uiState.value.shuffleEnabled)
-        if (ctrl != null) {
-            ctrl.shuffleModeEnabled = nextShuffle
+        val next = when (_uiState.value.shuffleMode) {
+            ShuffleMode.OFF -> ShuffleMode.STANDARD
+            ShuffleMode.STANDARD -> ShuffleMode.SMART
+            ShuffleMode.SMART -> ShuffleMode.OFF
         }
-        _uiState.update { it.copy(shuffleEnabled = nextShuffle) }
+        setShuffleMode(next)
+    }
+
+    fun setShuffleMode(mode: ShuffleMode) {
+        _uiState.update {
+            it.copy(
+                shuffleMode = mode,
+                shuffleEnabled = mode != ShuffleMode.OFF
+            )
+        }
+        scope.launch {
+            settingsRepository.setShuffleMode(mode)
+            val ctrl = _controller.value
+            val currentState = _uiState.value
+            val currentUri = ctrl?.currentMediaItem?.mediaId ?: currentState.currentUri
+
+            if (ctrl != null && ctrl.mediaItemCount > 0 && currentUri != null) {
+                val baseList = originalQueue.ifEmpty { currentState.queue }
+                val activeEntity = currentState.queue.firstOrNull { it.uri == currentUri }
+                    ?: baseList.firstOrNull { it.uri == currentUri }
+
+                if (mode == ShuffleMode.SMART && activeEntity != null) {
+                    val libraryPool = runCatching { mediaRepository.recentFlow.first() }.getOrDefault(emptyList())
+                    val smartResult = SmartQueueEngine.buildSmartQueue(
+                        currentItem = activeEntity,
+                        baseQueue = baseList,
+                        libraryPool = libraryPool
+                    )
+                    ctrl.shuffleModeEnabled = false
+                    replaceQueueAroundCurrentItem(
+                        ctrl = ctrl,
+                        beforeEntities = emptyList(),
+                        afterEntities = smartResult.orderedQueue.drop(1)
+                    )
+                    _uiState.update {
+                        it.copy(
+                            queue = smartResult.orderedQueue,
+                            currentQueueIndex = 0,
+                            smartPickUris = smartResult.smartPickUris,
+                            shuffleMode = ShuffleMode.SMART,
+                            shuffleEnabled = true
+                        )
+                    }
+                } else {
+                    val restored = baseList
+                    val idxInRestored = restored.indexOfFirst { it.uri == currentUri }
+                    if (idxInRestored >= 0 && (currentState.smartPickUris.isNotEmpty() || currentState.queue != restored)) {
+                        replaceQueueAroundCurrentItem(
+                            ctrl = ctrl,
+                            beforeEntities = restored.subList(0, idxInRestored),
+                            afterEntities = restored.subList(idxInRestored + 1, restored.size)
+                        )
+                        _uiState.update {
+                            it.copy(
+                                queue = restored,
+                                currentQueueIndex = idxInRestored,
+                                smartPickUris = emptySet()
+                            )
+                        }
+                    } else {
+                        _uiState.update { it.copy(smartPickUris = emptySet()) }
+                    }
+                    ctrl.shuffleModeEnabled = (mode == ShuffleMode.STANDARD)
+                }
+            } else {
+                ctrl?.shuffleModeEnabled = (mode == ShuffleMode.STANDARD)
+                if (mode != ShuffleMode.SMART) {
+                    _uiState.update { it.copy(smartPickUris = emptySet()) }
+                }
+            }
+        }
+    }
+
+    private fun replaceQueueAroundCurrentItem(
+        ctrl: MediaController,
+        beforeEntities: List<MediaItemEntity>,
+        afterEntities: List<MediaItemEntity>
+    ) {
+        val activeIdx = ctrl.currentMediaItemIndex
+        if (activeIdx < 0 || activeIdx >= ctrl.mediaItemCount) return
+        if (activeIdx < ctrl.mediaItemCount - 1) {
+            ctrl.removeMediaItems(activeIdx + 1, ctrl.mediaItemCount)
+        }
+        if (activeIdx > 0) {
+            ctrl.removeMediaItems(0, activeIdx)
+        }
+        if (beforeEntities.isNotEmpty()) {
+            ctrl.addMediaItems(0, beforeEntities.map { buildMediaItem(it) })
+        }
+        if (afterEntities.isNotEmpty()) {
+            ctrl.addMediaItems(afterEntities.map { buildMediaItem(it) })
+        }
     }
 
     fun selectAudioTrack(option: TrackOption) {
@@ -490,7 +555,7 @@ class PlayerControllerHolder(
             val entity = mediaRepository.getMediaByUri(currentUri) ?: return@launch
             val pos = ctrl.currentPosition
             val wasPlaying = ctrl.isPlaying
-            val updatedItem = withContext(Dispatchers.IO) { buildMediaItem(entity) }
+            val updatedItem = buildMediaItem(entity)
             val idx = ctrl.currentMediaItemIndex
             if (idx >= 0) {
                 ctrl.replaceMediaItem(idx, updatedItem)
@@ -541,17 +606,7 @@ class PlayerControllerHolder(
         _uiState.update { it.copy(errorMessage = null) }
     }
 
-    fun retryCurrentPlayback() {
-        val ctrl = _controller.value ?: return
-        _uiState.update { it.copy(errorMessage = null) }
-        val pos = ctrl.currentPosition.coerceAtLeast(0L)
-        ctrl.seekTo(pos)
-        ctrl.prepare()
-        ctrl.play()
-    }
-
     private fun buildMediaItem(entity: MediaItemEntity): MediaItem {
-        val playableUri = resolvePlayableUri(entity)
         val extras = Bundle().apply {
             putBoolean("is_video", entity.isVideo)
         }
@@ -564,79 +619,17 @@ class PlayerControllerHolder(
 
         val builder = MediaItem.Builder()
             .setMediaId(entity.uri)
-            .setUri(playableUri)
+            .setUri(Uri.parse(entity.uri))
             .setMediaMetadata(metadata)
 
-        val subUriString = entity.externalSubtitleUri
-        if (!subUriString.isNullOrBlank()) {
-            val subUri = Uri.parse(subUriString)
-            if (isUriReadable(subUri)) {
-                val subConfig = SubtitleParser.buildSubtitleConfiguration(context, subUri)
-                builder.setSubtitleConfigurations(listOf(subConfig))
-            }
+        if (!entity.externalSubtitleUri.isNullOrBlank()) {
+            val subConfig = SubtitleParser.buildSubtitleConfiguration(
+                context,
+                Uri.parse(entity.externalSubtitleUri)
+            )
+            builder.setSubtitleConfigurations(listOf(subConfig))
         }
         return builder.build()
-    }
-
-    @Suppress("DEPRECATION")
-    private fun resolvePlayableUri(entity: MediaItemEntity): Uri {
-        val parsed = Uri.parse(entity.uri)
-        if (parsed.scheme?.lowercase() != "file") return parsed
-        val path = parsed.path ?: return parsed
-        val file = File(path)
-        if (file.exists() && file.canRead()) return parsed
-
-        // Fallback to MediaStore content:// URI if direct file:// access is unavailable
-        val collection = if (entity.isVideo) {
-            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-        } else {
-            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
-        }
-        val byData = runCatching {
-            context.contentResolver.query(
-                collection,
-                arrayOf(MediaStore.MediaColumns._ID),
-                "${MediaStore.MediaColumns.DATA} = ?",
-                arrayOf(path),
-                null
-            )?.use { c ->
-                if (c.moveToFirst()) ContentUris.withAppendedId(collection, c.getLong(0)) else null
-            }
-        }.getOrNull()
-        return byData ?: parsed
-    }
-
-    private fun isUriReadable(uri: Uri): Boolean {
-        return when (uri.scheme?.lowercase()) {
-            "file" -> uri.path?.let { File(it).canRead() } == true
-            "content" -> runCatching {
-                context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { true } ?: false
-            }.getOrDefault(false)
-            else -> true
-        }
-    }
-
-    private fun formatPlaybackError(error: PlaybackException): String {
-        val rootCause = generateSequence<Throwable>(error) { it.cause }.lastOrNull()
-        return when {
-            rootCause is SecurityException || error.errorCode == PlaybackException.ERROR_CODE_IO_NO_PERMISSION ->
-                "Access denied for this file. Grant All Files access or re-import the video."
-            rootCause is FileNotFoundException || error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ->
-                "File not found or unreadable on storage."
-            error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED ||
-                error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ->
-                "Unsupported or damaged media container (${rootCause?.message ?: error.errorCodeName})."
-            error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
-                error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED ||
-                error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED ||
-                error.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES ->
-                "Codec not supported by current decoder. Try Software Decoder."
-            else -> {
-                val detail = rootCause?.message?.takeIf { it.isNotBlank() && it != error.localizedMessage }
-                if (detail != null) "${error.localizedMessage ?: "Playback error"}: $detail"
-                else error.localizedMessage ?: "Playback error (${error.errorCodeName})"
-            }
-        }
     }
 
     private fun syncFullState(ctrl: MediaController) {
@@ -659,7 +652,7 @@ class PlayerControllerHolder(
                 playbackSpeed = ctrl.playbackParameters.speed,
                 playbackPitch = ctrl.playbackParameters.pitch,
                 repeatMode = ctrl.repeatMode,
-                shuffleEnabled = ctrl.shuffleModeEnabled,
+                shuffleEnabled = it.shuffleMode != ShuffleMode.OFF || ctrl.shuffleModeEnabled,
                 currentQueueIndex = ctrl.currentMediaItemIndex
             )
         }
@@ -761,36 +754,10 @@ class PlayerControllerHolder(
 
     fun release() {
         persistCurrentProgress()
-        playQueueJob?.cancel()
         positionJob?.cancel()
         sleepTimerJob?.cancel()
-        detachCurrentListener()
         controllerFuture?.let { MediaController.releaseFuture(it) }
         controllerFuture = null
         _controller.value = null
-    }
-
-    companion object {
-        const val MAX_PLAYER_QUEUE_SIZE = 200
-
-        internal fun windowQueueAroundIndex(
-            items: List<MediaItemEntity>,
-            targetIndex: Int,
-            maxWindowSize: Int = MAX_PLAYER_QUEUE_SIZE
-        ): Pair<List<MediaItemEntity>, Int> {
-            if (items.isEmpty()) return emptyList<MediaItemEntity>() to 0
-            val safeIndex = targetIndex.coerceIn(0, items.lastIndex)
-            val clampedMax = maxWindowSize.coerceAtLeast(1)
-            if (items.size <= clampedMax) return items to safeIndex
-
-            val half = clampedMax / 2
-            var start = (safeIndex - half).coerceAtLeast(0)
-            var endExclusive = start + clampedMax
-            if (endExclusive > items.size) {
-                endExclusive = items.size
-                start = (endExclusive - clampedMax).coerceAtLeast(0)
-            }
-            return items.subList(start, endExclusive) to (safeIndex - start)
-        }
     }
 }

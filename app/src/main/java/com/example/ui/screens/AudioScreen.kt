@@ -25,9 +25,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
+import androidx.compose.material.icons.automirrored.rounded.ViewList
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Audiotrack
-import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.DeleteOutline
@@ -36,7 +36,6 @@ import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.GraphicEq
-import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
@@ -54,6 +53,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -84,21 +84,19 @@ import com.example.ui.components.formatDuration
 import com.example.ui.theme.MonoMetricsStyle
 import com.example.ui.viewmodel.AudioFilterTab
 import com.example.ui.viewmodel.LibraryUiState
-import com.example.ui.viewmodel.MediaFolder
+import com.example.ui.viewmodel.MediaFolderSummary
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AudioScreen(
     uiState: LibraryUiState,
-    isFolderView: Boolean,
-    hasStoragePermission: Boolean,
+    hasAllFilesPermission: Boolean,
     currentPlayingUri: String?,
     onSearchChange: (String) -> Unit,
     onSelectFilter: (AudioFilterTab) -> Unit,
-    onSelectFolderKey: (String?) -> Unit,
+    onOpenFolder: (String) -> Unit,
+    onCloseFolder: () -> Unit,
     onToggleFolderView: () -> Unit,
-    onRescanDevice: () -> Unit,
-    onRequestStoragePermission: () -> Unit,
     onPlayAudio: (List<MediaItemEntity>, Int) -> Unit,
     onShufflePlay: (List<MediaItemEntity>) -> Unit,
     onToggleLike: (MediaItemEntity) -> Unit,
@@ -107,19 +105,23 @@ fun AudioScreen(
     onPickAudioFiles: () -> Unit,
     onPickFolderTree: () -> Unit,
     onOpenEqualizer: () -> Unit,
+    onRequestAllFilesPermission: () -> Unit,
+    onRescanDevice: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var showSearch by remember { mutableStateOf(false) }
     var showImportMenu by remember { mutableStateOf(false) }
 
-    val activeFolder = uiState.activeAudioFolder
-    val isShowingFolderList = isFolderView &&
-        uiState.audioFilter == AudioFilterTab.ALL &&
-        activeFolder == null &&
+    val showingFolderDetail = uiState.audioFilter == AudioFilterTab.ALL &&
+        uiState.isAudioFolderView &&
+        uiState.openedAudioFolder != null
+    val showingFoldersList = uiState.audioFilter == AudioFilterTab.ALL &&
+        uiState.isAudioFolderView &&
+        uiState.openedAudioFolder == null &&
         uiState.searchQuery.isBlank()
 
-    BackHandler(enabled = activeFolder != null) {
-        onSelectFolderKey(null)
+    BackHandler(enabled = showingFolderDetail) {
+        onCloseFolder()
     }
 
     Scaffold(
@@ -128,54 +130,65 @@ fun AudioScreen(
         topBar = {
             TopAppBar(
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background.copy(alpha = 0.94f)
+                    containerColor = Color.Transparent,
+                    titleContentColor = MaterialTheme.colorScheme.onSurface,
+                    navigationIconContentColor = MaterialTheme.colorScheme.onSurface,
+                    actionIconContentColor = MaterialTheme.colorScheme.onSurface
                 ),
                 navigationIcon = {
-                    if (activeFolder != null) {
+                    if (showingFolderDetail) {
                         IconButton(
-                            onClick = { onSelectFolderKey(null) },
+                            onClick = onCloseFolder,
                             modifier = Modifier.testTag("audio_folder_back")
                         ) {
-                            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back to folders")
+                            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back to audio folders")
                         }
                     }
                 },
                 title = {
-                    if (activeFolder != null) {
+                    Column {
                         Text(
-                            text = activeFolder.name,
-                            style = MaterialTheme.typography.titleLarge,
+                            text = if (showingFolderDetail) uiState.openedAudioFolder.orEmpty() else "Audio Studio",
+                            style = MaterialTheme.typography.headlineMedium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                    } else {
-                        Text(
-                            text = "Audio",
-                            style = MaterialTheme.typography.titleLarge,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        val subtitle = when {
+                            showingFolderDetail -> "${uiState.audioTracks.size} ${if (uiState.audioTracks.size == 1) "track" else "tracks"}"
+                            showingFoldersList && uiState.audioFolderSummaries.isNotEmpty() ->
+                                "${uiState.audioFolderSummaries.size} ${if (uiState.audioFolderSummaries.size == 1) "folder" else "folders"} • ${uiState.audioTracks.size} tracks"
+                            uiState.audioTracks.isNotEmpty() -> "${uiState.audioTracks.size} tracks • Hi-Res Ready"
+                            else -> null
+                        }
+                        if (subtitle != null) {
+                            Text(
+                                text = subtitle,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 },
                 actions = {
-                    if (activeFolder == null && uiState.audioFilter == AudioFilterTab.ALL) {
+                    if (uiState.audioFilter == AudioFilterTab.ALL) {
                         IconButton(
                             onClick = onToggleFolderView,
                             modifier = Modifier.testTag("audio_folder_view_toggle")
                         ) {
                             Icon(
-                                imageVector = if (isFolderView) Icons.Rounded.LibraryMusic else Icons.Rounded.Folder,
-                                contentDescription = if (isFolderView) "Switch to all tracks" else "Switch to folder view"
+                                imageVector = if (uiState.isAudioFolderView) Icons.AutoMirrored.Rounded.ViewList else Icons.Rounded.Folder,
+                                contentDescription = if (uiState.isAudioFolderView) "Show all tracks flat" else "Group by folder"
                             )
                         }
                     }
                     IconButton(
-                        onClick = {
-                            if (hasStoragePermission) onRescanDevice() else onRequestStoragePermission()
-                        },
+                        onClick = if (hasAllFilesPermission) onRescanDevice else onRequestAllFilesPermission,
                         modifier = Modifier.testTag("audio_rescan_button")
                     ) {
-                        Icon(Icons.Rounded.Refresh, contentDescription = "Rescan device audio")
+                        Icon(
+                            imageVector = if (hasAllFilesPermission) Icons.Rounded.Refresh else Icons.Rounded.FolderOpen,
+                            contentDescription = if (hasAllFilesPermission) "Rescan device audio" else "Allow all files access"
+                        )
                     }
                     IconButton(
                         onClick = onOpenEqualizer,
@@ -199,8 +212,8 @@ fun AudioScreen(
             Box {
                 FloatingActionButton(
                     onClick = { showImportMenu = true },
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    containerColor = MaterialTheme.colorScheme.secondary,
+                    contentColor = MaterialTheme.colorScheme.onSecondary,
                     modifier = Modifier.testTag("audio_import_fab")
                 ) {
                     Icon(Icons.Rounded.Add, contentDescription = "Import audio")
@@ -209,14 +222,6 @@ fun AudioScreen(
                     expanded = showImportMenu,
                     onDismissRequest = { showImportMenu = false }
                 ) {
-                    DropdownMenuItem(
-                        text = { Text("Rescan Device Storage") },
-                        leadingIcon = { Icon(Icons.Rounded.Refresh, contentDescription = null) },
-                        onClick = {
-                            showImportMenu = false
-                            if (hasStoragePermission) onRescanDevice() else onRequestStoragePermission()
-                        }
-                    )
                     DropdownMenuItem(
                         text = { Text("Pick Audio Files (MP3, FLAC, OPUS...)") },
                         leadingIcon = { Icon(Icons.Rounded.Audiotrack, contentDescription = null) },
@@ -244,15 +249,9 @@ fun AudioScreen(
         ) {
             if (uiState.isScanning) {
                 LinearProgressIndicator(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-
-            if (!hasStoragePermission) {
-                StoragePermissionBanner(
-                    onGrantClick = onRequestStoragePermission,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp)
                 )
             }
 
@@ -260,12 +259,7 @@ fun AudioScreen(
                 OutlinedTextField(
                     value = uiState.searchQuery,
                     onValueChange = onSearchChange,
-                    placeholder = {
-                        Text(
-                            if (activeFolder != null) "Search in ${activeFolder.name}..."
-                            else "Search songs, artists, albums, folders..."
-                        )
-                    },
+                    placeholder = { Text("Search songs, artists, folders...") },
                     singleLine = true,
                     leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
                     trailingIcon = {
@@ -282,7 +276,7 @@ fun AudioScreen(
                 )
             }
 
-            if (activeFolder == null) {
+            if (!showingFolderDetail) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -315,31 +309,14 @@ fun AudioScreen(
                         }
                     }
                 }
-            } else if (uiState.audioTracks.isNotEmpty()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.End
-                ) {
-                    FilledTonalButton(
-                        onClick = { onShufflePlay(uiState.audioTracks) },
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        modifier = Modifier.testTag("audio_folder_shuffle")
-                    ) {
-                        Icon(Icons.Rounded.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Shuffle Folder")
-                    }
-                }
             }
 
-            if (isShowingFolderList) {
-                if (uiState.audioFolders.isEmpty()) {
+            if (showingFoldersList) {
+                if (uiState.audioFolderSummaries.isEmpty()) {
                     AudioEmptyState(
                         isLikedFilter = false,
-                        hasStoragePermission = hasStoragePermission,
-                        onRequestStoragePermission = onRequestStoragePermission,
+                        hasAllFilesPermission = hasAllFilesPermission,
+                        onRequestAllFilesPermission = onRequestAllFilesPermission,
                         onRescanDevice = onRescanDevice,
                         onPickAudioFiles = onPickAudioFiles,
                         onPickFolderTree = onPickFolderTree,
@@ -351,10 +328,10 @@ fun AudioScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.fillMaxSize()
                     ) {
-                        items(uiState.audioFolders, key = { it.key }) { folder ->
+                        items(uiState.audioFolderSummaries, key = { "afolder_${it.folderName}" }) { folder ->
                             AudioFolderRow(
                                 folder = folder,
-                                onClick = { onSelectFolderKey(folder.key) }
+                                onClick = { onOpenFolder(folder.folderName) }
                             )
                         }
                     }
@@ -362,8 +339,8 @@ fun AudioScreen(
             } else if (uiState.audioTracks.isEmpty()) {
                 AudioEmptyState(
                     isLikedFilter = uiState.audioFilter == AudioFilterTab.LIKED,
-                    hasStoragePermission = hasStoragePermission,
-                    onRequestStoragePermission = onRequestStoragePermission,
+                    hasAllFilesPermission = hasAllFilesPermission,
+                    onRequestAllFilesPermission = onRequestAllFilesPermission,
                     onRescanDevice = onRescanDevice,
                     onPickAudioFiles = onPickAudioFiles,
                     onPickFolderTree = onPickFolderTree,
@@ -393,7 +370,7 @@ fun AudioScreen(
 
 @Composable
 private fun AudioFolderRow(
-    folder: MediaFolder,
+    folder: MediaFolderSummary,
     onClick: () -> Unit
 ) {
     Surface(
@@ -403,58 +380,56 @@ private fun AudioFolderRow(
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .clickable(onClick = onClick)
-            .testTag("audio_folder_row")
+            .testTag("audio_folder_row_${folder.folderName}")
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 12.dp),
+                .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = MaterialTheme.colorScheme.secondaryContainer,
-                modifier = Modifier.size(52.dp)
+                modifier = Modifier.size(50.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Rounded.Folder,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.secondary,
-                    modifier = Modifier.padding(13.dp)
-                )
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Rounded.Folder,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
             }
-            Spacer(modifier = Modifier.width(12.dp))
+            Spacer(modifier = Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = folder.name,
+                    text = folder.folderName,
                     style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = folder.pathLabel,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                val countLabel = "${folder.items.size} ${if (folder.items.size == 1) "track" else "tracks"}"
+                val tracksLabel = "${folder.itemCount} ${if (folder.itemCount == 1) "track" else "tracks"}"
                 val durationLabel = if (folder.totalDurationMs > 0L) formatDuration(folder.totalDurationMs) else ""
                 Text(
-                    text = listOf(countLabel, durationLabel).filter { it.isNotBlank() }.joinToString(" • "),
-                    style = MonoMetricsStyle,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1
+                    text = listOf(tracksLabel, durationLabel).filter { it.isNotBlank() }.joinToString(" • "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Icon(
-                imageVector = Icons.Rounded.ChevronRight,
-                contentDescription = "Open folder",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f)
+            ) {
+                Text(
+                    text = "${folder.itemCount}",
+                    style = MonoMetricsStyle,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                )
+            }
         }
     }
 }
@@ -567,8 +542,8 @@ private fun AudioTrackRow(
 @Composable
 private fun AudioEmptyState(
     isLikedFilter: Boolean,
-    hasStoragePermission: Boolean,
-    onRequestStoragePermission: () -> Unit,
+    hasAllFilesPermission: Boolean,
+    onRequestAllFilesPermission: () -> Unit,
     onRescanDevice: () -> Unit,
     onPickAudioFiles: () -> Unit,
     onPickFolderTree: () -> Unit,
@@ -626,49 +601,38 @@ private fun AudioEmptyState(
                 )
                 if (!isLikedFilter) {
                     Button(
-                        onClick = if (hasStoragePermission) onRescanDevice else onRequestStoragePermission,
+                        onClick = if (hasAllFilesPermission) onRescanDevice else onRequestAllFilesPermission,
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(48.dp)
-                            .testTag("empty_scan_device_audio_button")
+                            .testTag("empty_scan_all_audio_button")
                     ) {
                         Icon(
-                            imageVector = if (hasStoragePermission) Icons.Rounded.Refresh else Icons.Rounded.FolderOpen,
+                            if (hasAllFilesPermission) Icons.Rounded.Refresh else Icons.Rounded.FolderOpen,
                             contentDescription = null
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(if (hasStoragePermission) "Scan Device Audio" else "Allow All Files & Scan")
+                        Text(if (hasAllFilesPermission) "Scan Device Audio Folders" else "Allow All Files & Scan Device")
                     }
-                }
-                FilledTonalButton(
-                    onClick = onPickAudioFiles,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp)
-                        .testTag("empty_pick_audio_button")
-                ) {
-                    Icon(Icons.Rounded.Audiotrack, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Pick Audio Files")
                 }
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     FilledTonalButton(
-                        onClick = onPickFolderTree,
+                        onClick = onPickAudioFiles,
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
                             .weight(1f)
                             .height(48.dp)
+                            .testTag("empty_pick_audio_button")
                     ) {
-                        Icon(Icons.Rounded.CreateNewFolder, contentDescription = null)
+                        Icon(Icons.Rounded.Audiotrack, contentDescription = null)
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Scan Folder")
+                        Text("Pick Files", maxLines = 1)
                     }
-                    FilledTonalButton(
+                    OutlinedButton(
                         onClick = onOpenEqualizer,
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier
@@ -677,7 +641,7 @@ private fun AudioEmptyState(
                     ) {
                         Icon(Icons.Rounded.GraphicEq, contentDescription = null)
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Equalizer")
+                        Text("Equalizer", maxLines = 1)
                     }
                 }
             }

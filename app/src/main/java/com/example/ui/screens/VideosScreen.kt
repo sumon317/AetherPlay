@@ -8,7 +8,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -24,7 +23,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -36,7 +35,6 @@ import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.Sort
 import androidx.compose.material.icons.automirrored.rounded.ViewList
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.DeleteOutline
@@ -59,6 +57,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -71,6 +70,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -82,13 +82,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.local.MediaItemEntity
 import com.example.ui.components.MediaThumbnail
@@ -97,7 +95,7 @@ import com.example.ui.components.formatFileSize
 import com.example.ui.components.formatResolution
 import com.example.ui.theme.MonoMetricsStyle
 import com.example.ui.viewmodel.LibraryUiState
-import com.example.ui.viewmodel.MediaFolder
+import com.example.ui.viewmodel.MediaFolderSummary
 import com.example.ui.viewmodel.MediaSortOrder
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -105,16 +103,15 @@ import com.example.ui.viewmodel.MediaSortOrder
 fun VideosScreen(
     uiState: LibraryUiState,
     isGridMode: Boolean,
-    isFolderView: Boolean,
-    hasStoragePermission: Boolean,
+    hasAllFilesPermission: Boolean,
     currentPlayingUri: String?,
     onSearchChange: (String) -> Unit,
-    onSelectFolderKey: (String?) -> Unit,
+    onSelectFolder: (String) -> Unit,
+    onOpenFolder: (String) -> Unit,
+    onCloseFolder: () -> Unit,
+    onToggleFolderView: () -> Unit,
     onSelectSort: (MediaSortOrder) -> Unit,
     onToggleGridMode: () -> Unit,
-    onToggleFolderView: () -> Unit,
-    onRescanDevice: () -> Unit,
-    onRequestStoragePermission: () -> Unit,
     onPlayVideo: (List<MediaItemEntity>, Int) -> Unit,
     onToggleLike: (MediaItemEntity) -> Unit,
     onAddToPlaylist: (MediaItemEntity) -> Unit,
@@ -123,35 +120,21 @@ fun VideosScreen(
     onPickDocumentFiles: () -> Unit,
     onPickFolderTree: () -> Unit,
     onOpenStreamDialog: () -> Unit,
+    onRequestAllFilesPermission: () -> Unit,
+    onRescanDevice: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var showSearch by remember { mutableStateOf(false) }
     var showSortMenu by remember { mutableStateOf(false) }
-    var showOverflowMenu by remember { mutableStateOf(false) }
     var showImportMenu by remember { mutableStateOf(false) }
 
-    val activeFolder = uiState.activeVideoFolder
-    val isShowingFolderList = isFolderView && activeFolder == null && uiState.searchQuery.isBlank()
+    val showingFolderDetail = uiState.isVideoFolderView && uiState.openedVideoFolder != null
+    val showingFoldersList = uiState.isVideoFolderView &&
+        uiState.openedVideoFolder == null &&
+        uiState.searchQuery.isBlank()
 
-    val screenWidthDp = LocalConfiguration.current.screenWidthDp
-    val titleFontSize = when {
-        screenWidthDp < 360 -> 18.sp
-        screenWidthDp < 440 -> 20.sp
-        else -> 24.sp
-    }
-    val actionButtonSize = when {
-        screenWidthDp < 360 -> 38.dp
-        screenWidthDp < 440 -> 42.dp
-        else -> 48.dp
-    }
-    val actionIconSize = when {
-        screenWidthDp < 360 -> 20.dp
-        screenWidthDp < 440 -> 22.dp
-        else -> 24.dp
-    }
-
-    BackHandler(enabled = activeFolder != null) {
-        onSelectFolderKey(null)
+    BackHandler(enabled = showingFolderDetail) {
+        onCloseFolder()
     }
 
     Scaffold(
@@ -160,125 +143,76 @@ fun VideosScreen(
         topBar = {
             TopAppBar(
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background.copy(alpha = 0.94f)
+                    containerColor = Color.Transparent,
+                    titleContentColor = MaterialTheme.colorScheme.onSurface,
+                    navigationIconContentColor = MaterialTheme.colorScheme.onSurface,
+                    actionIconContentColor = MaterialTheme.colorScheme.onSurface
                 ),
                 navigationIcon = {
-                    if (activeFolder != null) {
+                    if (showingFolderDetail) {
                         IconButton(
-                            onClick = { onSelectFolderKey(null) },
-                            modifier = Modifier
-                                .size(actionButtonSize)
-                                .testTag("videos_folder_back")
+                            onClick = onCloseFolder,
+                            modifier = Modifier.testTag("videos_folder_back")
                         ) {
-                            Icon(
-                                Icons.AutoMirrored.Rounded.ArrowBack,
-                                contentDescription = "Back to folders",
-                                modifier = Modifier.size(actionIconSize)
-                            )
+                            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back to folders")
                         }
                     }
                 },
                 title = {
-                    Text(
-                        text = activeFolder?.name ?: "Videos",
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            fontSize = titleFontSize,
-                            fontWeight = FontWeight.SemiBold
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Column {
+                        Text(
+                            text = if (showingFolderDetail) uiState.openedVideoFolder.orEmpty() else "Videos",
+                            style = MaterialTheme.typography.headlineMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        val subtitle = when {
+                            showingFolderDetail -> "${uiState.videos.size} ${if (uiState.videos.size == 1) "video" else "videos"}"
+                            showingFoldersList && uiState.videoFolderSummaries.isNotEmpty() ->
+                                "${uiState.videoFolderSummaries.size} ${if (uiState.videoFolderSummaries.size == 1) "folder" else "folders"} • ${uiState.videos.size} titles"
+                            uiState.videos.isNotEmpty() -> "${uiState.videos.size} titles • Hardware Ready"
+                            else -> null
+                        }
+                        if (subtitle != null) {
+                            Text(
+                                text = subtitle,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 },
                 actions = {
                     IconButton(
+                        onClick = onToggleFolderView,
+                        modifier = Modifier.testTag("videos_folder_view_toggle")
+                    ) {
+                        Icon(
+                            imageVector = if (uiState.isVideoFolderView) Icons.Rounded.VideoLibrary else Icons.Rounded.Folder,
+                            contentDescription = if (uiState.isVideoFolderView) "Show all videos flat" else "Group by folder"
+                        )
+                    }
+                    IconButton(
                         onClick = { showSearch = !showSearch },
-                        modifier = Modifier
-                            .size(actionButtonSize)
-                            .testTag("videos_search_toggle")
+                        modifier = Modifier.testTag("videos_search_toggle")
                     ) {
                         Icon(
                             imageVector = if (showSearch) Icons.Rounded.Close else Icons.Rounded.Search,
-                            contentDescription = "Search videos",
-                            modifier = Modifier.size(actionIconSize)
+                            contentDescription = "Search videos"
                         )
-                    }
-                    if (activeFolder == null) {
-                        IconButton(
-                            onClick = onToggleFolderView,
-                            modifier = Modifier
-                                .size(actionButtonSize)
-                                .testTag("videos_folder_view_toggle")
-                        ) {
-                            Icon(
-                                imageVector = if (isFolderView) Icons.Rounded.VideoLibrary else Icons.Rounded.Folder,
-                                contentDescription = if (isFolderView) "Switch to all videos" else "Switch to folder view",
-                                tint = if (isFolderView) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurface
-                                },
-                                modifier = Modifier.size(actionIconSize)
-                            )
-                        }
                     }
                     IconButton(
                         onClick = onToggleGridMode,
-                        modifier = Modifier
-                            .size(actionButtonSize)
-                            .testTag("videos_layout_toggle")
+                        modifier = Modifier.testTag("videos_layout_toggle")
                     ) {
                         Icon(
                             imageVector = if (isGridMode) Icons.AutoMirrored.Rounded.ViewList else Icons.Rounded.GridView,
-                            contentDescription = if (isGridMode) "Switch to list view" else "Switch to grid view",
-                            tint = if (isGridMode) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurface
-                            },
-                            modifier = Modifier.size(actionIconSize)
+                            contentDescription = "Toggle grid or list"
                         )
                     }
                     Box {
-                        IconButton(
-                            onClick = { showOverflowMenu = true },
-                            modifier = Modifier
-                                .size(actionButtonSize)
-                                .testTag("videos_more_button")
-                        ) {
-                            Icon(
-                                Icons.Rounded.MoreVert,
-                                contentDescription = "More options",
-                                modifier = Modifier.size(actionIconSize)
-                            )
-                        }
-                        DropdownMenu(
-                            expanded = showOverflowMenu,
-                            onDismissRequest = { showOverflowMenu = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("Sort: ${uiState.sortOrder.label}") },
-                                leadingIcon = { Icon(Icons.AutoMirrored.Rounded.Sort, contentDescription = null) },
-                                onClick = {
-                                    showOverflowMenu = false
-                                    showSortMenu = true
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Rescan Device Storage") },
-                                leadingIcon = { Icon(Icons.Rounded.Refresh, contentDescription = null) },
-                                onClick = {
-                                    showOverflowMenu = false
-                                    if (hasStoragePermission) onRescanDevice() else onRequestStoragePermission()
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Open Stream URL") },
-                                leadingIcon = { Icon(Icons.Rounded.Link, contentDescription = null) },
-                                onClick = {
-                                    showOverflowMenu = false
-                                    onOpenStreamDialog()
-                                }
-                            )
+                        IconButton(onClick = { showSortMenu = true }) {
+                            Icon(Icons.AutoMirrored.Rounded.Sort, contentDescription = "Sort videos")
                         }
                         DropdownMenu(
                             expanded = showSortMenu,
@@ -293,7 +227,21 @@ fun VideosScreen(
                                     }
                                 )
                             }
+                            DropdownMenuItem(
+                                text = { Text(if (hasAllFilesPermission) "Rescan Device Storage" else "Allow All Files Access") },
+                                leadingIcon = { Icon(Icons.Rounded.Refresh, contentDescription = null) },
+                                onClick = {
+                                    showSortMenu = false
+                                    if (hasAllFilesPermission) onRescanDevice() else onRequestAllFilesPermission()
+                                }
+                            )
                         }
+                    }
+                    IconButton(
+                        onClick = onOpenStreamDialog,
+                        modifier = Modifier.testTag("open_stream_button")
+                    ) {
+                        Icon(Icons.Rounded.Link, contentDescription = "Open stream URL")
                     }
                 }
             )
@@ -312,14 +260,6 @@ fun VideosScreen(
                     expanded = showImportMenu,
                     onDismissRequest = { showImportMenu = false }
                 ) {
-                    DropdownMenuItem(
-                        text = { Text("Rescan Device Storage") },
-                        leadingIcon = { Icon(Icons.Rounded.Refresh, contentDescription = null) },
-                        onClick = {
-                            showImportMenu = false
-                            if (hasStoragePermission) onRescanDevice() else onRequestStoragePermission()
-                        }
-                    )
                     DropdownMenuItem(
                         text = { Text("Pick Videos (Photo Picker)") },
                         leadingIcon = { Icon(Icons.Rounded.Movie, contentDescription = null) },
@@ -363,28 +303,50 @@ fun VideosScreen(
         ) {
             if (uiState.isScanning) {
                 LinearProgressIndicator(
-                    modifier = Modifier.fillMaxWidth(),
-                    color = MaterialTheme.colorScheme.primary
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(2.dp)
                 )
             }
 
-            if (!hasStoragePermission) {
-                StoragePermissionBanner(
-                    onGrantClick = onRequestStoragePermission,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
-                )
+            if (!hasAllFilesPermission && uiState.videoFolderSummaries.isEmpty()) {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .clickable(onClick = onRequestAllFilesPermission)
+                        .testTag("videos_permission_banner")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            Icons.Rounded.FolderOpen,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Enable All Files Access", style = MaterialTheme.typography.labelLarge)
+                            Text(
+                                text = "Tap to scan all device video & audio folders automatically.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
             }
 
             AnimatedVisibility(visible = showSearch) {
                 OutlinedTextField(
                     value = uiState.searchQuery,
                     onValueChange = onSearchChange,
-                    placeholder = {
-                        Text(
-                            if (activeFolder != null) "Search in ${activeFolder.name}..."
-                            else "Search movies, clips, folders..."
-                        )
-                    },
+                    placeholder = { Text("Search movies, clips, folders...") },
                     singleLine = true,
                     leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
                     trailingIcon = {
@@ -402,11 +364,26 @@ fun VideosScreen(
                 )
             }
 
-            if (isShowingFolderList) {
-                if (uiState.videoFolders.isEmpty()) {
+            if (!uiState.isVideoFolderView && uiState.videoFolders.size > 1) {
+                LazyRow(
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(uiState.videoFolders) { folder ->
+                        FilterChip(
+                            selected = folder == uiState.selectedFolder,
+                            onClick = { onSelectFolder(folder) },
+                            label = { Text(folder) }
+                        )
+                    }
+                }
+            }
+
+            if (showingFoldersList) {
+                if (uiState.videoFolderSummaries.isEmpty()) {
                     VideoEmptyHeroState(
-                        hasStoragePermission = hasStoragePermission,
-                        onRequestStoragePermission = onRequestStoragePermission,
+                        hasAllFilesPermission = hasAllFilesPermission,
+                        onRequestAllFilesPermission = onRequestAllFilesPermission,
                         onRescanDevice = onRescanDevice,
                         onPickPhotoPickerVideos = onPickPhotoPickerVideos,
                         onPickDocumentFiles = onPickDocumentFiles,
@@ -415,7 +392,7 @@ fun VideosScreen(
                     )
                 } else if (isGridMode) {
                     LazyVerticalGrid(
-                        columns = GridCells.Adaptive(minSize = 148.dp),
+                        columns = GridCells.Adaptive(minSize = 172.dp),
                         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 112.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -432,10 +409,10 @@ fun VideosScreen(
                                 )
                             }
                         }
-                        items(uiState.videoFolders, key = { it.key }) { folder ->
+                        gridItems(uiState.videoFolderSummaries, key = { "vfolder_${it.folderName}" }) { folder ->
                             VideoFolderGridCard(
                                 folder = folder,
-                                onClick = { onSelectFolderKey(folder.key) }
+                                onClick = { onOpenFolder(folder.folderName) }
                             )
                         }
                     }
@@ -456,18 +433,18 @@ fun VideosScreen(
                                 )
                             }
                         }
-                        items(uiState.videoFolders, key = { it.key }) { folder ->
+                        items(uiState.videoFolderSummaries, key = { "vfolder_${it.folderName}" }) { folder ->
                             VideoFolderListRow(
                                 folder = folder,
-                                onClick = { onSelectFolderKey(folder.key) }
+                                onClick = { onOpenFolder(folder.folderName) }
                             )
                         }
                     }
                 }
             } else if (uiState.videos.isEmpty()) {
                 VideoEmptyHeroState(
-                    hasStoragePermission = hasStoragePermission,
-                    onRequestStoragePermission = onRequestStoragePermission,
+                    hasAllFilesPermission = hasAllFilesPermission,
+                    onRequestAllFilesPermission = onRequestAllFilesPermission,
                     onRescanDevice = onRescanDevice,
                     onPickPhotoPickerVideos = onPickPhotoPickerVideos,
                     onPickDocumentFiles = onPickDocumentFiles,
@@ -482,7 +459,7 @@ fun VideosScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    if (activeFolder == null && uiState.continueWatching.isNotEmpty() && uiState.searchQuery.isBlank()) {
+                    if (!showingFolderDetail && uiState.continueWatching.isNotEmpty() && uiState.searchQuery.isBlank()) {
                         item(span = { GridItemSpan(maxLineSpan) }) {
                             ContinueWatchingSection(
                                 items = uiState.continueWatching,
@@ -510,7 +487,7 @@ fun VideosScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    if (activeFolder == null && uiState.continueWatching.isNotEmpty() && uiState.searchQuery.isBlank()) {
+                    if (!showingFolderDetail && uiState.continueWatching.isNotEmpty() && uiState.searchQuery.isBlank()) {
                         item {
                             ContinueWatchingSection(
                                 items = uiState.continueWatching,
@@ -538,56 +515,15 @@ fun VideosScreen(
 }
 
 @Composable
-fun StoragePermissionBanner(
-    onGrantClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
-        modifier = modifier.fillMaxWidth()
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = Icons.Rounded.FolderOpen,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary
-            )
-            Spacer(modifier = Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Allow All Files Access",
-                    style = MaterialTheme.typography.titleSmall
-                )
-                Text(
-                    text = "Grant permission to scan all device folders automatically.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Spacer(modifier = Modifier.width(8.dp))
-            FilledTonalButton(onClick = onGrantClick) {
-                Text("Allow")
-            }
-        }
-    }
-}
-
-@Composable
 private fun VideoFolderListRow(
-    folder: MediaFolder,
+    folder: MediaFolderSummary,
     onClick: () -> Unit
 ) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .testTag("video_folder_row"),
+            .testTag("video_folder_row_${folder.folderName}"),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
     ) {
@@ -602,13 +538,12 @@ private fun VideoFolderListRow(
                     .width(96.dp)
                     .aspectRatio(16f / 10f)
             ) {
-                val preview = folder.previewUri
-                if (preview != null) {
+                if (folder.previewUri != null) {
                     MediaThumbnail(
-                        uri = preview,
+                        uri = folder.previewUri,
                         isVideo = true,
-                        isStream = preview.startsWith("http"),
-                        contentDescription = folder.name,
+                        isStream = false,
+                        contentDescription = folder.folderName,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxSize()
                     )
@@ -619,75 +554,64 @@ private fun VideoFolderListRow(
                             .background(Color.Black.copy(alpha = 0.28f))
                     )
                 } else {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer,
-                        modifier = Modifier.fillMaxSize()
-                    ) {}
-                }
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = Color.Black.copy(alpha = 0.72f),
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(6.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Folder,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
+                    Box(
                         modifier = Modifier
-                            .padding(4.dp)
-                            .size(16.dp)
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.primaryContainer)
                     )
                 }
+                Icon(
+                    imageVector = Icons.Rounded.Folder,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(28.dp)
+                )
             }
-            Spacer(modifier = Modifier.width(12.dp))
+            Spacer(modifier = Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = folder.name,
+                    text = folder.folderName,
                     style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Spacer(modifier = Modifier.height(2.dp))
+                Spacer(modifier = Modifier.height(3.dp))
+                val sizeLabel = formatFileSize(folder.totalSizeBytes)
+                val countLabel = "${folder.itemCount} ${if (folder.itemCount == 1) "video" else "videos"}"
                 Text(
-                    text = folder.pathLabel,
+                    text = listOf(countLabel, sizeLabel).filter { it.isNotBlank() }.joinToString(" • "),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                val sizeStr = formatFileSize(folder.totalSizeBytes)
-                val countStr = "${folder.items.size} ${if (folder.items.size == 1) "video" else "videos"}"
-                Text(
-                    text = listOf(countStr, sizeStr).filter { it.isNotBlank() }.joinToString(" • "),
-                    style = MonoMetricsStyle,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Icon(
-                imageVector = Icons.Rounded.ChevronRight,
-                contentDescription = "Open folder",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+            ) {
+                Text(
+                    text = "${folder.itemCount}",
+                    style = MonoMetricsStyle,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                )
+            }
         }
     }
 }
 
 @Composable
 private fun VideoFolderGridCard(
-    folder: MediaFolder,
+    folder: MediaFolderSummary,
     onClick: () -> Unit
 ) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .testTag("video_folder_grid_card"),
+            .testTag("video_folder_grid_${folder.folderName}"),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
     ) {
@@ -697,65 +621,65 @@ private fun VideoFolderGridCard(
                     .fillMaxWidth()
                     .aspectRatio(16f / 10f)
             ) {
-                val preview = folder.previewUri
-                if (preview != null) {
+                if (folder.previewUri != null) {
                     MediaThumbnail(
-                        uri = preview,
+                        uri = folder.previewUri,
                         isVideo = true,
-                        isStream = preview.startsWith("http"),
-                        contentDescription = folder.name,
+                        isStream = false,
+                        contentDescription = folder.folderName,
                         shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
                         modifier = Modifier.fillMaxSize()
                     )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.32f))
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.primaryContainer)
+                    )
                 }
+                Icon(
+                    imageVector = Icons.Rounded.Folder,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(36.dp)
+                )
                 Surface(
                     color = Color.Black.copy(alpha = 0.72f),
-                    shape = RoundedCornerShape(8.dp),
+                    shape = RoundedCornerShape(6.dp),
                     modifier = Modifier
-                        .align(Alignment.TopStart)
+                        .align(Alignment.BottomEnd)
                         .padding(8.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Folder,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "${folder.items.size}",
-                            style = MonoMetricsStyle,
-                            color = Color.White
-                        )
-                    }
+                    Text(
+                        text = "${folder.itemCount} videos",
+                        style = MonoMetricsStyle,
+                        color = Color.White,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
                 }
             }
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp)
-            ) {
+            Column(modifier = Modifier.padding(12.dp)) {
                 Text(
-                    text = folder.name,
+                    text = folder.folderName,
                     style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Text(
-                    text = listOf(
-                        "${folder.items.size} ${if (folder.items.size == 1) "video" else "videos"}",
-                        formatFileSize(folder.totalSizeBytes)
-                    ).filter { it.isNotBlank() }.joinToString(" • "),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                val sizeLabel = formatFileSize(folder.totalSizeBytes)
+                if (sizeLabel.isNotBlank()) {
+                    Text(
+                        text = sizeLabel,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }
@@ -975,13 +899,6 @@ private fun VideoListRow(
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val resBadge = formatResolution(video.width, video.height)
-    val durationText = if (video.durationMs > 0L) formatDuration(video.durationMs) else ""
-    val sizeText = formatFileSize(video.fileSizeBytes)
-    val fallbackMeta = when {
-        sizeText.isNotEmpty() -> sizeText
-        video.isStream -> "Stream"
-        else -> video.folderName
-    }
     val progress = if (video.durationMs > 0L && video.lastPlayedPositionMs > 0L) {
         (video.lastPlayedPositionMs.toFloat() / video.durationMs.toFloat()).coerceIn(0f, 1f)
     } else 0f
@@ -1000,56 +917,67 @@ private fun VideoListRow(
             }
         )
     ) {
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = video.title,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = if (isPlayingNow) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                maxLines = Int.MAX_VALUE,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+            Box(
+                modifier = Modifier
+                    .width(126.dp)
+                    .aspectRatio(16f / 9f)
             ) {
-                Box(
-                    modifier = Modifier
-                        .width(68.dp)
-                        .aspectRatio(16f / 9f)
-                ) {
-                    MediaThumbnail(
-                        uri = video.uri,
-                        isVideo = true,
-                        isStream = video.isStream,
-                        contentDescription = video.title,
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxSize()
-                    )
-                    if (progress > 0f) {
-                        LinearProgressIndicator(
-                            progress = { progress },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(2.dp)
-                                .align(Alignment.BottomCenter)
-                                .clip(RoundedCornerShape(bottomStart = 8.dp, bottomEnd = 8.dp)),
-                            color = MaterialTheme.colorScheme.primary,
-                            trackColor = Color.White.copy(alpha = 0.2f)
+                MediaThumbnail(
+                    uri = video.uri,
+                    isVideo = true,
+                    isStream = video.isStream,
+                    contentDescription = video.title,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxSize()
+                )
+                if (video.durationMs > 0L) {
+                    Surface(
+                        color = Color.Black.copy(alpha = 0.74f),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(5.dp)
+                    ) {
+                        Text(
+                            text = formatDuration(video.durationMs),
+                            style = MonoMetricsStyle,
+                            color = Color.White,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
                         )
                     }
                 }
-                Spacer(modifier = Modifier.width(10.dp))
-                FlowRow(
-                    modifier = Modifier.weight(1f),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                    itemVerticalAlignment = Alignment.CenterVertically
+                if (progress > 0f) {
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(2.5.dp)
+                            .align(Alignment.BottomCenter)
+                            .clip(RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp)),
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = Color.White.copy(alpha = 0.2f)
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = video.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (resBadge.isNotEmpty()) {
                         Surface(
@@ -1064,56 +992,42 @@ private fun VideoListRow(
                             )
                         }
                     }
-                    if (durationText.isNotEmpty()) {
-                        Text(
-                            text = durationText,
-                            style = MonoMetricsStyle,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1
-                        )
-                    }
-                    if (fallbackMeta.isNotBlank()) {
-                        Text(
-                            text = fallbackMeta,
-                            style = MonoMetricsStyle,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1
-                        )
-                    }
+                    Text(
+                        text = listOf(video.folderName, formatFileSize(video.fileSizeBytes))
+                            .filter { it.isNotBlank() }
+                            .joinToString(" • "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(
-                        onClick = onToggleLike,
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(
-                            imageVector = if (video.isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                            contentDescription = "Favorite",
-                            tint = if (video.isLiked) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    Box {
-                        IconButton(
-                            onClick = { menuOpen = true },
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.MoreVert,
-                                contentDescription = "More options",
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                        VideoActionMenu(
-                            expanded = menuOpen,
-                            isLiked = video.isLiked,
-                            onDismiss = { menuOpen = false },
-                            onToggleLike = onToggleLike,
-                            onAddToPlaylist = onAddToPlaylist,
-                            onDelete = onDelete
-                        )
-                    }
+            }
+            IconButton(
+                onClick = onToggleLike,
+                modifier = Modifier.minimumInteractiveComponentSize()
+            ) {
+                Icon(
+                    imageVector = if (video.isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                    contentDescription = "Favorite",
+                    tint = if (video.isLiked) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Box {
+                IconButton(
+                    onClick = { menuOpen = true },
+                    modifier = Modifier.minimumInteractiveComponentSize()
+                ) {
+                    Icon(Icons.Rounded.MoreVert, contentDescription = "More options")
                 }
+                VideoActionMenu(
+                    expanded = menuOpen,
+                    isLiked = video.isLiked,
+                    onDismiss = { menuOpen = false },
+                    onToggleLike = onToggleLike,
+                    onAddToPlaylist = onAddToPlaylist,
+                    onDelete = onDelete
+                )
             }
         }
     }
@@ -1163,8 +1077,8 @@ private fun VideoActionMenu(
 
 @Composable
 private fun VideoEmptyHeroState(
-    hasStoragePermission: Boolean,
-    onRequestStoragePermission: () -> Unit,
+    hasAllFilesPermission: Boolean,
+    onRequestAllFilesPermission: () -> Unit,
     onRescanDevice: () -> Unit,
     onPickPhotoPickerVideos: () -> Unit,
     onPickDocumentFiles: () -> Unit,
@@ -1225,36 +1139,36 @@ private fun VideoEmptyHeroState(
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Button(
-                            onClick = if (hasStoragePermission) onRescanDevice else onRequestStoragePermission,
+                            onClick = if (hasAllFilesPermission) onRescanDevice else onRequestAllFilesPermission,
                             shape = RoundedCornerShape(14.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(50.dp)
-                                .testTag("empty_scan_device_videos_button")
+                                .testTag("empty_scan_all_videos_button")
                         ) {
                             Icon(
-                                imageVector = if (hasStoragePermission) Icons.Rounded.Refresh else Icons.Rounded.FolderOpen,
+                                if (hasAllFilesPermission) Icons.Rounded.Refresh else Icons.Rounded.FolderOpen,
                                 contentDescription = null
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text(if (hasStoragePermission) "Scan Device Videos" else "Allow All Files & Scan")
-                        }
-                        FilledTonalButton(
-                            onClick = onPickPhotoPickerVideos,
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp)
-                                .testTag("empty_pick_videos_button")
-                        ) {
-                            Icon(Icons.Rounded.Movie, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Pick Videos from Gallery")
+                            Text(if (hasAllFilesPermission) "Scan Device Video Folders" else "Allow All Files & Scan Device")
                         }
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
+                            FilledTonalButton(
+                                onClick = onPickPhotoPickerVideos,
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("empty_pick_videos_button")
+                            ) {
+                                Icon(Icons.Rounded.Movie, contentDescription = null)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Gallery", maxLines = 1)
+                            }
                             FilledTonalButton(
                                 onClick = onPickFolderTree,
                                 shape = RoundedCornerShape(14.dp),
@@ -1265,9 +1179,14 @@ private fun VideoEmptyHeroState(
                             ) {
                                 Icon(Icons.Rounded.CreateNewFolder, contentDescription = null)
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Scan Folder", maxLines = 1)
+                                Text("Pick Folder", maxLines = 1)
                             }
-                            FilledTonalButton(
+                        }
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            OutlinedButton(
                                 onClick = onPickDocumentFiles,
                                 shape = RoundedCornerShape(14.dp),
                                 modifier = Modifier
@@ -1279,18 +1198,18 @@ private fun VideoEmptyHeroState(
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text("Any Format", maxLines = 1)
                             }
-                        }
-                        OutlinedButton(
-                            onClick = onOpenStreamDialog,
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp)
-                                .testTag("empty_stream_button")
-                        ) {
-                            Icon(Icons.Rounded.Link, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Play Network Stream URL")
+                            OutlinedButton(
+                                onClick = onOpenStreamDialog,
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .testTag("empty_stream_button")
+                            ) {
+                                Icon(Icons.Rounded.Link, contentDescription = null)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Stream URL", maxLines = 1)
+                            }
                         }
                     }
                 }

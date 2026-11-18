@@ -83,7 +83,10 @@ fun GestureControlsScreen(
         topBar = {
             TopAppBar(
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background.copy(alpha = 0.94f)
+                    containerColor = Color.Transparent,
+                    titleContentColor = MaterialTheme.colorScheme.onSurface,
+                    navigationIconContentColor = MaterialTheme.colorScheme.onSurface,
+                    actionIconContentColor = MaterialTheme.colorScheme.onSurface
                 ),
                 navigationIcon = {
                     IconButton(
@@ -249,7 +252,7 @@ private fun GestureZoneDiagramCard(preferences: UserPreferences) {
                     .fillMaxWidth()
                     .height(106.dp)
                     .clip(RoundedCornerShape(14.dp))
-                    .background(MaterialTheme.colorScheme.surfaceContainerLowest),
+                    .background(Color(0xFF0A0E17)),
                 horizontalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 Box(

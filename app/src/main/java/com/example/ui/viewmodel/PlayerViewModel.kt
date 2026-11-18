@@ -16,6 +16,7 @@ import com.example.data.local.UserPreferences
 import com.example.data.repository.MediaRepository
 import com.example.player.PlaybackUiState
 import com.example.player.PlayerControllerHolder
+import com.example.player.ShuffleMode
 import com.example.player.SubtitleParser
 import com.example.player.TrackOption
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -89,7 +90,9 @@ class PlayerViewModel(
     fun setSpeed(speed: Float) = playerController.setPlaybackSpeed(speed)
     fun setPitch(pitch: Float) = playerController.setPlaybackPitch(pitch)
     fun cycleRepeat() = playerController.cycleRepeatMode()
+    fun setRepeatMode(mode: Int) = playerController.setRepeatMode(mode)
     fun toggleShuffle() = playerController.toggleShuffle()
+    fun setShuffleMode(mode: ShuffleMode) = playerController.setShuffleMode(mode)
     fun selectAudioTrack(option: TrackOption) = playerController.selectAudioTrack(option)
     fun selectSubtitleTrack(option: TrackOption?) = playerController.selectSubtitleTrack(option)
     fun attachExternalSubtitle(uri: Uri) = playerController.attachExternalSubtitle(uri)

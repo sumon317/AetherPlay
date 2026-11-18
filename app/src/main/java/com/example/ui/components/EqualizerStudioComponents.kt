@@ -60,6 +60,7 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -787,7 +788,7 @@ private fun ProfileCurveCard(
         color = containerColor,
         border = border,
         modifier = modifier
-            .width(136.dp)
+            .width(148.dp)
             .clip(RoundedCornerShape(16.dp))
             .clickable(onClick = onSelect)
     ) {
@@ -819,13 +820,13 @@ private fun ProfileCurveCard(
                 if (onDelete != null) {
                     IconButton(
                         onClick = onDelete,
-                        modifier = Modifier.size(26.dp)
+                        modifier = Modifier.minimumInteractiveComponentSize()
                     ) {
                         Icon(
                             Icons.Rounded.DeleteOutline,
                             contentDescription = "Delete $title profile",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(16.dp)
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                 }
@@ -947,6 +948,7 @@ private fun StudioChannelStripFader(
     }
     val trackBg = MaterialTheme.colorScheme.surfaceContainerLowest
     val capBg = MaterialTheme.colorScheme.surfaceContainerHighest
+    val capGripColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)
     val tickColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
     val zeroNotchColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
     val span = (band.maxLevelMb - band.minLevelMb).coerceAtLeast(1).toFloat()
@@ -1061,7 +1063,7 @@ private fun StudioChannelStripFader(
                     style = Stroke(width = 1.4.dp.toPx())
                 )
                 drawLine(
-                    color = Color.White.copy(alpha = 0.9f),
+                    color = capGripColor,
                     start = Offset(centerX - 8.dp.toPx(), thumbY),
                     end = Offset(centerX + 8.dp.toPx(), thumbY),
                     strokeWidth = 2.dp.toPx(),

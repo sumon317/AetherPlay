@@ -4,10 +4,8 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
-import android.content.res.Configuration
 import android.media.AudioManager
 import android.net.Uri
-import android.view.OrientationEventListener
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -16,11 +14,12 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
-import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -37,7 +36,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -47,10 +45,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AspectRatio
 import androidx.compose.material.icons.rounded.Audiotrack
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Brightness6
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.FastForward
 import androidx.compose.material.icons.rounded.FastRewind
 import androidx.compose.material.icons.rounded.Forward10
@@ -63,8 +61,14 @@ import androidx.compose.material.icons.rounded.Loop
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Repeat
+import androidx.compose.material.icons.rounded.RepeatOn
+import androidx.compose.material.icons.rounded.RepeatOne
+import androidx.compose.material.icons.rounded.RepeatOneOn
 import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.ScreenRotation
+import androidx.compose.material.icons.rounded.Shuffle
+import androidx.compose.material.icons.rounded.ShuffleOn
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Speed
@@ -99,7 +103,6 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -110,18 +113,19 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import androidx.media3.ui.compose.PlayerSurface
@@ -132,11 +136,11 @@ import com.example.data.local.SubtitleFontStyle
 import com.example.data.local.SubtitlePreferences
 import com.example.data.local.UserPreferences
 import com.example.player.PlaybackUiState
+import com.example.player.ShuffleMode
 import com.example.player.TrackOption
 import com.example.ui.components.formatDuration
 import com.example.ui.components.formatSignedDeltaSeconds
 import com.example.ui.theme.JetBrainsMonoFontFamily
-import com.example.ui.theme.LocalIsDarkTheme
 import com.example.ui.theme.MonoMetricsStyle
 import com.example.ui.theme.PlusJakartaSansFontFamily
 import com.example.ui.theme.SpaceGroteskFontFamily
@@ -172,22 +176,21 @@ fun VideoPlayerScreen(
     onUpdateSubtitlePrefs: ((SubtitlePreferences) -> SubtitlePreferences) -> Unit,
     onSetSleepTimer: (Int?) -> Unit,
     onToggleAbLoop: () -> Unit,
-    onRetryWithSoftwareDecoder: () -> Unit = {}
+    onToggleShuffle: () -> Unit,
+    onSetShuffleMode: (ShuffleMode) -> Unit,
+    onCycleRepeat: () -> Unit,
+    onSetRepeatMode: (Int) -> Unit
 ) {
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
     val view = LocalView.current
-    val configuration = LocalConfiguration.current
-    val isCurrentlyLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val isDarkTheme = LocalIsDarkTheme.current
     val audioManager = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
 
     var showControls by remember { mutableStateOf(true) }
     var isLocked by remember { mutableStateOf(false) }
     var aspectMode by remember { mutableStateOf(AspectRatioMode.FIT) }
     var zoomScale by remember { mutableFloatStateOf(1f) }
-    var manualLockTargetOrientation by remember { mutableStateOf<Int?>(null) }
-    val currentManualTarget by rememberUpdatedState(manualLockTargetOrientation)
+    var isLandscape by remember { mutableStateOf(false) }
 
     var showTracksSheet by remember { mutableStateOf(false) }
     var tracksSheetInitialTab by remember { mutableIntStateOf(0) }
@@ -207,15 +210,13 @@ fun VideoPlayerScreen(
         if (uri != null) onAttachExternalSubtitle(uri)
     }
 
-    // Manage system bars visibility & white icon legibility over dark cinema background
+    // Manage system bars visibility for true cinema immersion
     DisposableEffect(showControls, isInPipMode) {
         val window = activity?.window
         if (window != null && !isInPipMode) {
             val insetsController = WindowCompat.getInsetsController(window, view)
             insetsController.systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            insetsController.isAppearanceLightStatusBars = false
-            insetsController.isAppearanceLightNavigationBars = false
             if (showControls) {
                 insetsController.show(WindowInsetsCompat.Type.systemBars())
             } else {
@@ -225,43 +226,10 @@ fun VideoPlayerScreen(
         onDispose { }
     }
 
-    // Always rotate video player via hardware sensor regardless of OS Auto-Rotate setting,
-    // releasing manual rotate lock back to sensor once physical orientation aligns.
-    DisposableEffect(activity, isInPipMode) {
-        var listener: OrientationEventListener? = null
-        if (activity != null && !isInPipMode) {
-            if (currentManualTarget == null) {
-                activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
-            }
-            listener = object : OrientationEventListener(activity) {
-                override fun onOrientationChanged(orientation: Int) {
-                    if (orientation == ORIENTATION_UNKNOWN) return
-                    val target = currentManualTarget ?: return
-                    val physicalOrientation = when {
-                        orientation <= 30 || orientation >= 330 -> Configuration.ORIENTATION_PORTRAIT
-                        orientation in 60..120 || orientation in 240..300 -> Configuration.ORIENTATION_LANDSCAPE
-                        else -> return
-                    }
-                    if (physicalOrientation == target) {
-                        manualLockTargetOrientation = null
-                        activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
-                    }
-                }
-            }.apply {
-                if (canDetectOrientation()) enable()
-            }
-        }
-        onDispose {
-            listener?.disable()
-        }
-    }
-
-    DisposableEffect(activity, isDarkTheme) {
+    DisposableEffect(Unit) {
         onDispose {
             activity?.window?.let { window ->
                 val insetsController = WindowCompat.getInsetsController(window, view)
-                insetsController.isAppearanceLightStatusBars = !isDarkTheme
-                insetsController.isAppearanceLightNavigationBars = !isDarkTheme
                 insetsController.show(WindowInsetsCompat.Type.systemBars())
                 val lp = window.attributes
                 lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
@@ -580,7 +548,7 @@ fun VideoPlayerScreen(
                             style = MaterialTheme.typography.titleMedium,
                             color = Color.White,
                             maxLines = 1,
-                            modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE)
+                            overflow = TextOverflow.Ellipsis
                         )
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -631,16 +599,11 @@ fun VideoPlayerScreen(
                     }
                     IconButton(
                         onClick = {
-                            val nextTarget = if (isCurrentlyLandscape) {
-                                Configuration.ORIENTATION_PORTRAIT
-                            } else {
-                                Configuration.ORIENTATION_LANDSCAPE
-                            }
-                            manualLockTargetOrientation = nextTarget
-                            activity?.requestedOrientation = if (nextTarget == Configuration.ORIENTATION_LANDSCAPE) {
+                            isLandscape = !isLandscape
+                            activity?.requestedOrientation = if (isLandscape) {
                                 ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                             } else {
-                                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                             }
                         }
                     ) {
@@ -701,27 +664,114 @@ fun VideoPlayerScreen(
                         .navigationBarsPadding()
                         .padding(horizontal = 14.dp, vertical = 10.dp)
                 ) {
-                    // A-B loop indicator if set
-                    if (playbackState.abLoopStartMs != null) {
-                        Row(
-                            modifier = Modifier.padding(bottom = 4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                    // Quick Queue Mode Toggles (Smart Shuffle & Repeat All/One) + A-B Loop badge
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(bottom = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val shuffleTint = when (playbackState.shuffleMode) {
+                            ShuffleMode.SMART -> MaterialTheme.colorScheme.secondary
+                            ShuffleMode.STANDARD -> MaterialTheme.colorScheme.primary
+                            ShuffleMode.OFF -> Color.White.copy(alpha = 0.88f)
+                        }
+                        Surface(
+                            color = if (playbackState.shuffleMode != ShuffleMode.OFF) {
+                                shuffleTint.copy(alpha = 0.24f)
+                            } else {
+                                Color.White.copy(alpha = 0.14f)
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable(onClick = onToggleShuffle)
+                                .testTag("video_player_shuffle_toggle")
                         ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Icon(
+                                    imageVector = when (playbackState.shuffleMode) {
+                                        ShuffleMode.SMART -> Icons.Rounded.AutoAwesome
+                                        ShuffleMode.STANDARD -> Icons.Rounded.ShuffleOn
+                                        ShuffleMode.OFF -> Icons.Rounded.Shuffle
+                                    },
+                                    contentDescription = "Toggle shuffle mode",
+                                    tint = shuffleTint,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = playbackState.shuffleMode.label,
+                                    style = MonoMetricsStyle,
+                                    color = if (playbackState.shuffleMode != ShuffleMode.OFF) shuffleTint else Color.White
+                                )
+                            }
+                        }
+
+                        val repeatActive = playbackState.repeatMode != Player.REPEAT_MODE_OFF
+                        val repeatTint = if (repeatActive) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.88f)
+                        val repeatLabel = when (playbackState.repeatMode) {
+                            Player.REPEAT_MODE_ONE -> "Repeat One"
+                            Player.REPEAT_MODE_ALL -> "Repeat All"
+                            else -> "Repeat Off"
+                        }
+                        Surface(
+                            color = if (repeatActive) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.24f)
+                            } else {
+                                Color.White.copy(alpha = 0.14f)
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable(onClick = onCycleRepeat)
+                                .testTag("video_player_repeat_toggle")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Icon(
+                                    imageVector = when (playbackState.repeatMode) {
+                                        Player.REPEAT_MODE_ONE -> Icons.Rounded.RepeatOneOn
+                                        Player.REPEAT_MODE_ALL -> Icons.Rounded.RepeatOn
+                                        else -> Icons.Rounded.Repeat
+                                    },
+                                    contentDescription = "Cycle repeat mode",
+                                    tint = repeatTint,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = repeatLabel,
+                                    style = MonoMetricsStyle,
+                                    color = if (repeatActive) MaterialTheme.colorScheme.primary else Color.White
+                                )
+                            }
+                        }
+
+                        if (playbackState.abLoopStartMs != null) {
                             Surface(
                                 color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.25f),
                                 shape = RoundedCornerShape(8.dp)
                             ) {
                                 val text = if (playbackState.abLoopEndMs == null) {
-                                    "A-B Loop: A = ${formatDuration(playbackState.abLoopStartMs)} (Tap Loop again to set B)"
+                                    "A: ${formatDuration(playbackState.abLoopStartMs)}"
                                 } else {
-                                    "A-B Loop: ${formatDuration(playbackState.abLoopStartMs)} → ${formatDuration(playbackState.abLoopEndMs)}"
+                                    "${formatDuration(playbackState.abLoopStartMs)}→${formatDuration(playbackState.abLoopEndMs)}"
                                 }
                                 Text(
                                     text = text,
                                     style = MonoMetricsStyle,
                                     color = MaterialTheme.colorScheme.secondary,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
                                 )
                             }
                         }
@@ -816,67 +866,6 @@ fun VideoPlayerScreen(
                 }
             }
         }
-
-        // Playback Error Overlay with Software Decoder Retry
-        val errorMsg = playbackState.errorMessage
-        if (errorMsg != null && !isInPipMode) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.72f))
-                    .padding(24.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    tonalElevation = 8.dp,
-                    modifier = Modifier.widthIn(max = 360.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(20.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.ErrorOutline,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(36.dp)
-                        )
-                        Text(
-                            text = "Unable to Play Video",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = errorMsg,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = onBack,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("Go Back")
-                            }
-                            Button(
-                                onClick = onRetryWithSoftwareDecoder,
-                                modifier = Modifier.weight(1.3f)
-                            ) {
-                                Text("Retry (SW)")
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
 
     // Audio / Subtitles & Subtitle Customization Sheet
@@ -893,7 +882,7 @@ fun VideoPlayerScreen(
         )
     }
 
-    // Speed / Sleep Timer / A-B Loop Sheet
+    // Speed / Sleep Timer / A-B Loop / Shuffle & Repeat Sheet
     if (showSpeedSheet) {
         VideoToolsSheet(
             playbackState = playbackState,
@@ -902,6 +891,8 @@ fun VideoPlayerScreen(
             onSetSpeed = onSetSpeed,
             onSetSleepTimer = onSetSleepTimer,
             onToggleAbLoop = onToggleAbLoop,
+            onSetShuffleMode = onSetShuffleMode,
+            onSetRepeatMode = onSetRepeatMode,
             onSelectAspect = {
                 aspectMode = it
                 zoomScale = 1f
@@ -1099,7 +1090,7 @@ private fun VideoTracksAndSubtitlesSheet(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(14.dp))
-                                    .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+                                    .background(Color(0xFF0A0E17))
                                     .padding(16.dp),
                                 contentAlignment = Alignment.Center
                             ) {
@@ -1243,6 +1234,8 @@ private fun VideoToolsSheet(
     onSetSpeed: (Float) -> Unit,
     onSetSleepTimer: (Int?) -> Unit,
     onToggleAbLoop: () -> Unit,
+    onSetShuffleMode: (ShuffleMode) -> Unit,
+    onSetRepeatMode: (Int) -> Unit,
     onSelectAspect: (AspectRatioMode) -> Unit,
     onOpenGestureControls: () -> Unit
 ) {
@@ -1251,7 +1244,7 @@ private fun VideoToolsSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Text(
                 text = "Playback Speed: ${String.format(Locale.US, "%.2fx", playbackState.playbackSpeed)}",
@@ -1271,6 +1264,37 @@ private fun VideoToolsSheet(
                 onValueChange = onSetSpeed,
                 valueRange = 0.25f..3.0f
             )
+
+            Text("Shuffle & Smart Queue", style = MaterialTheme.typography.titleMedium)
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(ShuffleMode.entries) { mode ->
+                    FilterChip(
+                        selected = playbackState.shuffleMode == mode,
+                        onClick = { onSetShuffleMode(mode) },
+                        leadingIcon = if (mode == ShuffleMode.SMART) {
+                            { Icon(Icons.Rounded.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                        } else null,
+                        label = { Text(mode.label) }
+                    )
+                }
+            }
+
+            Text("Repeat Mode", style = MaterialTheme.typography.titleMedium)
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(
+                    listOf(
+                        Player.REPEAT_MODE_OFF to "Off",
+                        Player.REPEAT_MODE_ALL to "Repeat All",
+                        Player.REPEAT_MODE_ONE to "Repeat One"
+                    )
+                ) { (mode, label) ->
+                    FilterChip(
+                        selected = playbackState.repeatMode == mode,
+                        onClick = { onSetRepeatMode(mode) },
+                        label = { Text(label) }
+                    )
+                }
+            }
 
             Text("Aspect Ratio", style = MaterialTheme.typography.titleMedium)
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
