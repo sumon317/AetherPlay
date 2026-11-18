@@ -49,6 +49,22 @@ class MediaPlayerCoreTest {
     }
 
     @Test
+    fun `subtitle parser parses LRC lyrics into timed cues`() {
+        val lrc = """
+            [ar:Studio Artist]
+            [00:05.50]First lyric line
+            [00:12.00]Second lyric line
+        """.trimIndent()
+
+        val cues = SubtitleParser.parseRawSubtitles(lrc)
+        assertEquals(2, cues.size)
+        assertEquals(5500L, cues[0].startMs)
+        assertEquals(12000L, cues[0].endMs)
+        assertEquals("First lyric line", cues[0].text)
+        assertEquals("Second lyric line", SubtitleParser.activeCueTextAt(cues, positionMs = 13000L, syncDelayMs = 0L))
+    }
+
+    @Test
     fun `equalizer engine applies presets, clamps gains, and serializes`() {
         val engine = EqualizerEngine()
         val cinemaPreset = EqualizerUiState.BUILTIN_PRESETS.first { it.name == "Cinema" }

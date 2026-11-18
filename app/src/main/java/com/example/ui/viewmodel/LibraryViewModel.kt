@@ -73,8 +73,6 @@ class LibraryViewModel(
     private val selectedFolder = MutableStateFlow("All")
     private val sortOrder = MutableStateFlow(MediaSortOrder.RECENT)
     private val audioFilter = MutableStateFlow(AudioFilterTab.ALL)
-    private val isVideoFolderView = MutableStateFlow(true)
-    private val isAudioFolderView = MutableStateFlow(true)
     private val openedVideoFolder = MutableStateFlow<String?>(null)
     private val openedAudioFolder = MutableStateFlow<String?>(null)
     private val isScanning = MutableStateFlow(false)
@@ -94,12 +92,18 @@ class LibraryViewModel(
     }
 
     private val viewModeInputs = combine(
-        isVideoFolderView,
-        isAudioFolderView,
+        settingsRepository.preferencesFlow,
         openedVideoFolder,
         openedAudioFolder
-    ) { vFolderView, aFolderView, openV, openA ->
-        FolderViewBundle(vFolderView, aFolderView, openV, openA)
+    ) { prefs, openV, openA ->
+        FolderViewBundle(
+            isVideoFolderView = prefs.videoFolderView,
+            isAudioFolderView = prefs.audioFolderView,
+            openedVideoFolder = openV,
+            openedAudioFolder = openA,
+            minVideoDurationSeconds = prefs.minVideoDurationSeconds,
+            minAudioDurationSeconds = prefs.minAudioDurationSeconds
+        )
     }
 
     private val filterInputs = combine(
@@ -125,17 +129,31 @@ class LibraryViewModel(
         filterInputs,
         viewModeInputs
     ) { data, filters, folderMode ->
-        val folders = listOf("All") + data.videos.map { it.folderName }.distinct().sorted()
+        val minVideoMs = folderMode.minVideoDurationSeconds * 1000L
+        val minAudioMs = folderMode.minAudioDurationSeconds * 1000L
+
+        val eligibleVideos = if (minVideoMs > 0L) {
+            data.videos.filter { it.isStream || it.durationMs <= 0L || it.durationMs >= minVideoMs }
+        } else {
+            data.videos
+        }
+        val eligibleAudio = if (minAudioMs > 0L) {
+            data.audio.filter { it.isStream || it.durationMs <= 0L || it.durationMs >= minAudioMs }
+        } else {
+            data.audio
+        }
+
+        val folders = listOf("All") + eligibleVideos.map { it.folderName }.distinct().sorted()
         val activeFolder = if (filters.folder in folders) filters.folder else "All"
 
         val validOpenedVideoFolder = folderMode.openedVideoFolder?.takeIf { target ->
-            data.videos.any { it.folderName == target }
+            eligibleVideos.any { it.folderName == target }
         }
         val validOpenedAudioFolder = folderMode.openedAudioFolder?.takeIf { target ->
-            data.audio.any { it.folderName == target }
+            eligibleAudio.any { it.folderName == target }
         }
 
-        val videoFolderSummaries = data.videos
+        val videoFolderSummaries = eligibleVideos
             .groupBy { it.folderName.ifBlank { "Internal Storage" } }
             .map { (folderName, items) ->
                 MediaFolderSummary(
@@ -150,14 +168,14 @@ class LibraryViewModel(
             .filter { summary ->
                 filters.query.isBlank() ||
                     summary.folderName.contains(filters.query, ignoreCase = true) ||
-                    data.videos.any {
+                    eligibleVideos.any {
                         it.folderName == summary.folderName &&
                             it.title.contains(filters.query, ignoreCase = true)
                     }
             }
             .sortedBy { it.folderName.lowercase() }
 
-        val audioFolderSummaries = data.audio
+        val audioFolderSummaries = eligibleAudio
             .groupBy { it.folderName.ifBlank { "Internal Storage" } }
             .map { (folderName, items) ->
                 MediaFolderSummary(
@@ -172,7 +190,7 @@ class LibraryViewModel(
             .filter { summary ->
                 filters.query.isBlank() ||
                     summary.folderName.contains(filters.query, ignoreCase = true) ||
-                    data.audio.any {
+                    eligibleAudio.any {
                         it.folderName == summary.folderName && (
                             it.title.contains(filters.query, ignoreCase = true) ||
                                 it.artist.contains(filters.query, ignoreCase = true)
@@ -181,7 +199,7 @@ class LibraryViewModel(
             }
             .sortedBy { it.folderName.lowercase() }
 
-        val filteredVideos = data.videos
+        val filteredVideos = eligibleVideos
             .filter { item ->
                 when {
                     folderMode.isVideoFolderView && validOpenedVideoFolder != null ->
@@ -202,9 +220,9 @@ class LibraryViewModel(
         val baseAudio = when (filters.audioTab) {
             AudioFilterTab.ALL -> {
                 if (folderMode.isAudioFolderView && validOpenedAudioFolder != null) {
-                    data.audio.filter { it.folderName == validOpenedAudioFolder }
+                    eligibleAudio.filter { it.folderName == validOpenedAudioFolder }
                 } else {
-                    data.audio
+                    eligibleAudio
                 }
             }
             AudioFilterTab.LIKED -> data.liked.filter { !it.isVideo }
@@ -272,9 +290,10 @@ class LibraryViewModel(
     }
 
     fun toggleVideoFolderView() {
-        val next = !isVideoFolderView.value
-        isVideoFolderView.value = next
-        if (!next) openedVideoFolder.value = null
+        viewModelScope.launch {
+            val next = settingsRepository.toggleVideoFolderView()
+            if (!next) openedVideoFolder.value = null
+        }
     }
 
     fun openAudioFolder(folderName: String) {
@@ -286,14 +305,15 @@ class LibraryViewModel(
     }
 
     fun toggleAudioFolderView() {
-        val next = !isAudioFolderView.value
-        isAudioFolderView.value = next
-        if (!next) openedAudioFolder.value = null
+        viewModelScope.launch {
+            val next = settingsRepository.toggleAudioFolderView()
+            if (!next) openedAudioFolder.value = null
+        }
     }
 
     fun toggleVideoGridMode() {
         viewModelScope.launch {
-            settingsRepository.setVideoGridMode(!preferences.value.videoGridMode)
+            settingsRepository.toggleVideoGridMode()
         }
     }
 
@@ -353,6 +373,10 @@ class LibraryViewModel(
         if (url.isBlank()) return
         viewModelScope.launch {
             val item = mediaRepository.importStreamUrl(url, title, isVideo)
+            if (item == null) {
+                statusBanner.value = "Invalid stream URL"
+                return@launch
+            }
             playerController.playSingle(item, resumeSavedPosition = false)
             if (item.isVideo) onOpenVideo() else onOpenAudio()
         }
@@ -416,6 +440,12 @@ class LibraryViewModel(
         }
     }
 
+    fun restoreToPlaylist(playlistId: Long, mediaUri: String) {
+        viewModelScope.launch {
+            mediaRepository.addToPlaylist(playlistId, mediaUri)
+        }
+    }
+
     private fun List<MediaItemEntity>.sortWithOrder(order: MediaSortOrder): List<MediaItemEntity> = when (order) {
         MediaSortOrder.RECENT -> sortedByDescending { it.addedAt }
         MediaSortOrder.NAME_ASC -> sortedBy { it.title.lowercase() }
@@ -435,7 +465,9 @@ class LibraryViewModel(
         val isVideoFolderView: Boolean,
         val isAudioFolderView: Boolean,
         val openedVideoFolder: String?,
-        val openedAudioFolder: String?
+        val openedAudioFolder: String?,
+        val minVideoDurationSeconds: Int,
+        val minAudioDurationSeconds: Int
     )
 
     private data class FilterBundle(

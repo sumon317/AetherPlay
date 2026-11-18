@@ -21,6 +21,7 @@ import com.example.data.local.MediaItemEntity
 import com.example.data.local.PlaylistEntity
 import com.example.data.local.PlaylistMediaCrossRef
 import com.example.data.local.PlaylistWithItems
+import com.example.player.MediaSafety
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
@@ -44,6 +45,8 @@ class MediaRepository(
 
     suspend fun getMediaByUri(uri: String): MediaItemEntity? = mediaDao.getMediaByUri(uri)
 
+    fun observeMediaByUri(uri: String): Flow<MediaItemEntity?> = mediaDao.observeMediaByUri(uri)
+
     suspend fun toggleLike(uri: String, isLiked: Boolean) {
         mediaDao.setLiked(uri, isLiked)
     }
@@ -52,11 +55,19 @@ class MediaRepository(
         mediaDao.updatePlaybackProgress(uri, positionMs, System.currentTimeMillis())
     }
 
+    suspend fun updateMissingTechnicalMetadata(uri: String, durationMs: Long, width: Int, height: Int) {
+        if (durationMs > 0L || width > 0 || height > 0) {
+            mediaDao.updateMissingTechnicalMetadata(uri, durationMs, width, height)
+        }
+    }
+
     suspend fun attachExternalSubtitle(mediaUri: String, subtitleUri: String?) {
         runCatching {
             if (subtitleUri != null) {
+                val parsed = Uri.parse(subtitleUri)
+                if (!MediaSafety.isSafeExternalMediaUri(context, parsed)) return
                 context.contentResolver.takePersistableUriPermission(
-                    Uri.parse(subtitleUri),
+                    parsed,
                     Intent.FLAG_GRANT_READ_URI_PERMISSION
                 )
             }
@@ -98,6 +109,7 @@ class MediaRepository(
         val resolver = context.contentResolver
         val imported = mutableListOf<MediaItemEntity>()
         for (uri in uris) {
+            if (!MediaSafety.isSafeExternalMediaUri(context, uri)) continue
             runCatching {
                 resolver.takePersistableUriPermission(
                     uri,
@@ -114,6 +126,7 @@ class MediaRepository(
     }
 
     suspend fun importSingleExternalUri(uri: Uri): MediaItemEntity? = withContext(Dispatchers.IO) {
+        if (!MediaSafety.isSafeExternalMediaUri(context, uri)) return@withContext null
         val resolver = context.contentResolver
         runCatching {
             resolver.takePersistableUriPermission(
@@ -136,9 +149,12 @@ class MediaRepository(
         item
     }
 
-    suspend fun importStreamUrl(url: String, customTitle: String?, isVideo: Boolean): MediaItemEntity =
+    suspend fun importStreamUrl(url: String, customTitle: String?, isVideo: Boolean): MediaItemEntity? =
         withContext(Dispatchers.IO) {
-            val item = createStreamEntity(url.trim(), customTitle?.takeIf { it.isNotBlank() }, isVideo)
+            val trimmed = url.trim()
+            if (!MediaSafety.isValidStreamUrl(trimmed)) return@withContext null
+            val safeTitle = MediaSafety.sanitizeDisplayText(customTitle, 100).ifBlank { null }
+            val item = createStreamEntity(trimmed, safeTitle, isVideo)
             mediaDao.upsertMedia(item)
             item
         }
@@ -206,8 +222,22 @@ class MediaRepository(
             )
         }
 
-        if (collected.isNotEmpty()) {
-            mediaDao.insertMediaIfAbsent(collected)
+        val staleLocalUris = if (Environment.getExternalStorageState() == Environment.MEDIA_MOUNTED) {
+            mediaDao.getAllMediaOnce()
+                .asSequence()
+                .filter { !it.isStream && it.uri.startsWith("file://") }
+                .filter { item ->
+                    val path = runCatching { Uri.parse(item.uri).path }.getOrNull()
+                    path == null || !File(path).exists()
+                }
+                .map { it.uri }
+                .toList()
+        } else {
+            emptyList()
+        }
+
+        if (collected.isNotEmpty() || staleLocalUris.isNotEmpty()) {
+            mediaDao.syncScannedMedia(toInsert = collected, toDeleteUris = staleLocalUris)
         }
         collected.size
     }
@@ -490,11 +520,15 @@ class MediaRepository(
         }
         runCatching { retriever.release() }
 
+        val cleanTitle = MediaSafety.sanitizeDisplayText(title.ifBlank { rawName }, 120).ifBlank { rawName }
+        val cleanArtist = MediaSafety.sanitizeDisplayText(artist, 80).ifBlank { if (isVideo) folderLabel else "Unknown Artist" }
+        val cleanAlbum = MediaSafety.sanitizeDisplayText(album, 80).ifBlank { if (isVideo) folderLabel else "Local Audio" }
+
         return MediaItemEntity(
             uri = uri.toString(),
-            title = title.ifBlank { rawName },
-            artist = artist,
-            album = album,
+            title = cleanTitle,
+            artist = cleanArtist,
+            album = cleanAlbum,
             durationMs = durationMs,
             mimeType = mime,
             isVideo = isVideo,
@@ -507,7 +541,9 @@ class MediaRepository(
     }
 
     private fun createStreamEntity(url: String, customTitle: String?, forceVideo: Boolean = true): MediaItemEntity {
-        val cleanName = customTitle ?: Uri.parse(url).lastPathSegment?.substringBefore('?')?.ifBlank { null } ?: "Network Stream"
+        val rawSegment = Uri.parse(url).lastPathSegment?.substringBefore('?')
+        val cleanName = MediaSafety.sanitizeDisplayText(customTitle ?: rawSegment, 120)
+            .ifBlank { "Network Stream" }
         val lower = url.lowercase(Locale.ROOT)
         val isAudio = !forceVideo || lower.endsWith(".mp3") || lower.endsWith(".aac") ||
             lower.endsWith(".flac") || lower.endsWith(".ogg") || lower.endsWith(".opus") || lower.endsWith(".wav")

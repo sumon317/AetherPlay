@@ -155,4 +155,31 @@ class SafetyAndLeakTest {
         assertTrue(repo.toggleAudioFolderView())
         assertTrue(repo.preferencesFlow.first().audioFolderView)
     }
+
+    @Test
+    fun `audio gestures and library duration filters persist and reset cleanly`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val repo = SettingsRepository(context)
+
+        repo.setRotateAudioArtwork(true)
+        repo.setAudioSwipeUpAction(com.example.data.local.AudioSwipeAction.OPEN_EQUALIZER)
+        repo.setAudioSwipeDownAction(com.example.data.local.AudioSwipeAction.OPEN_LIKED_SONGS)
+        repo.setAudioDoubleTapAction(com.example.data.local.AudioDoubleTapAction.OPEN_SUBTITLES_LYRICS)
+        repo.setMinVideoDurationSeconds(30)
+        repo.setMinAudioDurationSeconds(15)
+
+        val updated = repo.preferencesFlow.first()
+        assertTrue(updated.rotateAudioArtwork)
+        assertEquals(com.example.data.local.AudioSwipeAction.OPEN_EQUALIZER, updated.audioSwipeUpAction)
+        assertEquals(com.example.data.local.AudioSwipeAction.OPEN_LIKED_SONGS, updated.audioSwipeDownAction)
+        assertEquals(com.example.data.local.AudioDoubleTapAction.OPEN_SUBTITLES_LYRICS, updated.audioDoubleTapAction)
+        assertEquals(30, updated.minVideoDurationSeconds)
+        assertEquals(15, updated.minAudioDurationSeconds)
+
+        repo.resetGestureDefaults()
+        val reset = repo.preferencesFlow.first()
+        assertEquals(com.example.data.local.AudioSwipeAction.OPEN_QUEUE, reset.audioSwipeUpAction)
+        assertEquals(com.example.data.local.AudioSwipeAction.MINIMISE, reset.audioSwipeDownAction)
+        assertEquals(com.example.data.local.AudioDoubleTapAction.LIKE_DISLIKE, reset.audioDoubleTapAction)
+    }
 }

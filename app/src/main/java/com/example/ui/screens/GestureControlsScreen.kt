@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Brightness6
 import androidx.compose.material.icons.rounded.FastForward
 import androidx.compose.material.icons.rounded.Refresh
@@ -49,6 +50,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.data.local.AudioDoubleTapAction
+import com.example.data.local.AudioSwipeAction
 import com.example.data.local.UserPreferences
 import com.example.ui.theme.MonoMetricsStyle
 import java.util.Locale
@@ -76,6 +79,10 @@ fun GestureControlsScreen(
     onSetDoubleTapSeek: (Boolean) -> Unit,
     onSetDefaultSeekSeconds: (Int) -> Unit,
     onSetLongPress2x: (Boolean) -> Unit,
+    onSetRotateAudioArtwork: (Boolean) -> Unit,
+    onSetAudioSwipeDownAction: (AudioSwipeAction) -> Unit,
+    onSetAudioSwipeUpAction: (AudioSwipeAction) -> Unit,
+    onSetAudioDoubleTapAction: (AudioDoubleTapAction) -> Unit,
     onResetDefaults: () -> Unit
 ) {
     Scaffold(
@@ -227,6 +234,67 @@ fun GestureControlsScreen(
                             checked = preferences.longPress2xSpeed,
                             onCheckedChange = onSetLongPress2x
                         )
+                    }
+                }
+            }
+
+            // Audio Player Gestures & Artwork Style
+            item {
+                Card(
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Rounded.Album, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text("Music Player Gestures & Artwork", style = MaterialTheme.typography.titleMedium)
+                        }
+
+                        GestureSwitchRow(
+                            title = "Rotating Vinyl Album Art",
+                            subtitle = "Spin round vinyl cover art during playback (off shows rounded frame)",
+                            checked = preferences.rotateAudioArtwork,
+                            onCheckedChange = onSetRotateAudioArtwork
+                        )
+
+                        Text("Swipe Down Action", style = MaterialTheme.typography.labelLarge)
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(AudioSwipeAction.entries) { action ->
+                                FilterChip(
+                                    selected = preferences.audioSwipeDownAction == action,
+                                    onClick = { onSetAudioSwipeDownAction(action) },
+                                    label = { Text(action.label) }
+                                )
+                            }
+                        }
+
+                        Text("Swipe Up Action", style = MaterialTheme.typography.labelLarge)
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(AudioSwipeAction.entries) { action ->
+                                FilterChip(
+                                    selected = preferences.audioSwipeUpAction == action,
+                                    onClick = { onSetAudioSwipeUpAction(action) },
+                                    label = { Text(action.label) }
+                                )
+                            }
+                        }
+
+                        Text("Double-Tap Album Art", style = MaterialTheme.typography.labelLarge)
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(AudioDoubleTapAction.entries) { action ->
+                                FilterChip(
+                                    selected = preferences.audioDoubleTapAction == action,
+                                    onClick = { onSetAudioDoubleTapAction(action) },
+                                    label = { Text(action.label) }
+                                )
+                            }
+                        }
                     }
                 }
             }

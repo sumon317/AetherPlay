@@ -1,14 +1,26 @@
 package com.example.ui.screens
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,39 +48,51 @@ import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Bedtime
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.Lyrics
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.RepeatOn
-import androidx.compose.material.icons.rounded.RepeatOne
 import androidx.compose.material.icons.rounded.RepeatOneOn
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.ShuffleOn
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.UploadFile
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -78,6 +102,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -85,12 +111,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.media3.common.Player
+import com.example.data.local.AudioDoubleTapAction
+import com.example.data.local.AudioSwipeAction
 import com.example.data.local.MediaItemEntity
+import com.example.data.local.UserPreferences
 import com.example.player.PlaybackUiState
 import com.example.player.ShuffleMode
 import com.example.ui.components.MediaThumbnail
 import com.example.ui.components.formatDuration
 import com.example.ui.theme.MonoMetricsStyle
+import kotlinx.coroutines.delay
 import java.util.Locale
 import kotlin.math.sin
 
@@ -99,14 +129,20 @@ import kotlin.math.sin
 fun AudioPlayerScreen(
     playbackState: PlaybackUiState,
     currentMedia: MediaItemEntity?,
+    preferences: UserPreferences,
+    likedAudioTracks: List<MediaItemEntity>,
+    subtitleText: String,
     onBack: () -> Unit,
     onOpenEqualizer: () -> Unit,
     onAddToPlaylist: (MediaItemEntity) -> Unit,
+    onPlayQueue: (List<MediaItemEntity>, Int) -> Unit,
+    onAttachExternalSubtitle: (Uri) -> Unit,
     onTogglePlayPause: () -> Unit,
     onSeekTo: (Long) -> Unit,
     onSkipNext: () -> Unit,
     onSkipPrevious: () -> Unit,
     onSkipToQueueIndex: (Int) -> Unit,
+    onRemoveFromQueue: (Int) -> Unit = {},
     onToggleShuffle: () -> Unit,
     onSetShuffleMode: (ShuffleMode) -> Unit,
     onCycleRepeat: () -> Unit,
@@ -117,8 +153,50 @@ fun AudioPlayerScreen(
 ) {
     var showQueueSheet by remember { mutableStateOf(false) }
     var showSpeedSheet by remember { mutableStateOf(false) }
+    var showLikedSheet by remember { mutableStateOf(false) }
+    var showLyricsSheet by remember { mutableStateOf(false) }
+    var showHeartPulse by remember { mutableStateOf(false) }
     var isScrubbing by remember { mutableStateOf(false) }
     var scrubPos by remember { mutableLongStateOf(0L) }
+    var vinylRotationDegrees by remember { mutableFloatStateOf(0f) }
+
+    val subtitleFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            onAttachExternalSubtitle(uri)
+        }
+    }
+
+    LaunchedEffect(playbackState.isPlaying, preferences.rotateAudioArtwork) {
+        if (!preferences.rotateAudioArtwork || !playbackState.isPlaying) return@LaunchedEffect
+        var lastNanos = 0L
+        while (true) {
+            withFrameNanos { frameNanos ->
+                if (lastNanos != 0L) {
+                    val deltaSec = (frameNanos - lastNanos) / 1_000_000_000f
+                    vinylRotationDegrees = (vinylRotationDegrees + deltaSec * 24f) % 360f
+                }
+                lastNanos = frameNanos
+            }
+        }
+    }
+
+    LaunchedEffect(showHeartPulse) {
+        if (showHeartPulse) {
+            delay(650L)
+            showHeartPulse = false
+        }
+    }
+
+    fun handleSwipeAction(action: AudioSwipeAction) {
+        when (action) {
+            AudioSwipeAction.MINIMISE -> onBack()
+            AudioSwipeAction.OPEN_QUEUE -> showQueueSheet = true
+            AudioSwipeAction.OPEN_EQUALIZER -> onOpenEqualizer()
+            AudioSwipeAction.OPEN_LIKED_SONGS -> showLikedSheet = true
+        }
+    }
 
     val primaryColor = MaterialTheme.colorScheme.primary
     val secondaryColor = MaterialTheme.colorScheme.secondary
@@ -136,6 +214,36 @@ fun AudioPlayerScreen(
                     )
                 )
             )
+            .pointerInput(preferences.audioSwipeUpAction, preferences.audioSwipeDownAction) {
+                var accumulatedDrag = 0f
+                var triggered = false
+                detectVerticalDragGestures(
+                    onDragStart = {
+                        accumulatedDrag = 0f
+                        triggered = false
+                    },
+                    onDragEnd = {
+                        accumulatedDrag = 0f
+                        triggered = false
+                    },
+                    onDragCancel = {
+                        accumulatedDrag = 0f
+                        triggered = false
+                    },
+                    onVerticalDrag = { _, dragAmount ->
+                        accumulatedDrag += dragAmount
+                        if (!triggered) {
+                            if (accumulatedDrag < -80f) {
+                                triggered = true
+                                handleSwipeAction(preferences.audioSwipeUpAction)
+                            } else if (accumulatedDrag > 80f) {
+                                triggered = true
+                                handleSwipeAction(preferences.audioSwipeDownAction)
+                            }
+                        }
+                    }
+                )
+            }
             .statusBarsPadding()
             .navigationBarsPadding()
     ) {
@@ -199,23 +307,120 @@ fun AudioPlayerScreen(
                 }
             }
 
-            // Elevated Album Artwork
-            MediaThumbnail(
-                uri = playbackState.currentUri.orEmpty(),
-                isVideo = playbackState.isVideo,
-                isStream = playbackState.currentUri?.startsWith("http") == true,
-                contentDescription = playbackState.currentTitle,
-                shape = RoundedCornerShape(28.dp),
+            // Artwork (Rotating Vinyl or Still Rounded Card) with Double-Tap Gesture
+            val artworkShape = if (preferences.rotateAudioArtwork) CircleShape else RoundedCornerShape(28.dp)
+            Box(
+                contentAlignment = Alignment.Center,
                 modifier = Modifier
                     .fillMaxWidth(0.76f)
                     .aspectRatio(1f)
-                    .shadow(
-                        elevation = if (playbackState.isPlaying) 28.dp else 10.dp,
-                        shape = RoundedCornerShape(28.dp),
-                        ambientColor = primaryColor,
-                        spotColor = secondaryColor
+                    .pointerInput(preferences.audioDoubleTapAction) {
+                        detectTapGestures(
+                            onDoubleTap = {
+                                when (preferences.audioDoubleTapAction) {
+                                    AudioDoubleTapAction.LIKE_DISLIKE -> {
+                                        onToggleLike()
+                                        showHeartPulse = true
+                                    }
+                                    AudioDoubleTapAction.OPEN_SUBTITLES_LYRICS -> {
+                                        showLyricsSheet = true
+                                    }
+                                }
+                            }
+                        )
+                    }
+                    .testTag("audio_player_artwork")
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            if (preferences.rotateAudioArtwork) {
+                                rotationZ = vinylRotationDegrees
+                            }
+                        }
+                        .shadow(
+                            elevation = if (playbackState.isPlaying) 28.dp else 10.dp,
+                            shape = artworkShape,
+                            ambientColor = primaryColor,
+                            spotColor = secondaryColor
+                        )
+                        .clip(artworkShape)
+                        .then(
+                            if (preferences.rotateAudioArtwork) {
+                                Modifier.border(
+                                    width = 6.dp,
+                                    color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.85f),
+                                    shape = CircleShape
+                                )
+                            } else {
+                                Modifier
+                            }
+                        )
+                ) {
+                    MediaThumbnail(
+                        uri = playbackState.currentUri.orEmpty(),
+                        isVideo = playbackState.isVideo,
+                        isStream = playbackState.currentUri?.startsWith("http") == true,
+                        contentDescription = playbackState.currentTitle,
+                        shape = artworkShape,
+                        modifier = Modifier.fillMaxSize()
                     )
-            )
+                    if (preferences.rotateAudioArtwork) {
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.background.copy(alpha = 0.92f))
+                                .border(2.dp, primaryColor.copy(alpha = 0.65f), CircleShape)
+                        )
+                    }
+                }
+
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = showHeartPulse,
+                    enter = fadeIn() + scaleIn(initialScale = 0.6f),
+                    exit = fadeOut() + scaleOut(targetScale = 1.25f)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Favorite,
+                            contentDescription = null,
+                            tint = secondaryColor,
+                            modifier = Modifier
+                                .padding(18.dp)
+                                .size(44.dp)
+                        )
+                    }
+                }
+            }
+
+            // Live Lyric / Subtitle Banner when active
+            if (subtitleText.isNotBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.85f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .clickable { showLyricsSheet = true }
+                        .testTag("audio_player_lyric_banner")
+                ) {
+                    Text(
+                        text = subtitleText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                    )
+                }
+            }
 
             // Reactive Studio Spectrum Visualizer
             ReactiveAudioVisualizer(
@@ -422,6 +627,7 @@ fun AudioPlayerScreen(
                     shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.surfaceContainer,
                     modifier = Modifier
+                        .minimumInteractiveComponentSize()
                         .clip(RoundedCornerShape(12.dp))
                         .clickable { showSpeedSheet = true }
                 ) {
@@ -438,6 +644,7 @@ fun AudioPlayerScreen(
                     shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.surfaceContainer,
                     modifier = Modifier
+                        .minimumInteractiveComponentSize()
                         .clip(RoundedCornerShape(12.dp))
                         .clickable {
                             val next = if (playbackState.sleepTimerRemainingMs == null) 30 else null
@@ -456,14 +663,35 @@ fun AudioPlayerScreen(
                         )
                     }
                 }
+                IconButton(
+                    onClick = { showLyricsSheet = true },
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("audio_player_lyrics_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Lyrics,
+                        contentDescription = "Lyrics and subtitles",
+                        tint = if (playbackState.externalCues.isNotEmpty() || playbackState.activeCues.isNotEmpty()) {
+                            primaryColor
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
                 if (currentMedia != null) {
-                    IconButton(onClick = { onAddToPlaylist(currentMedia) }) {
+                    IconButton(
+                        onClick = { onAddToPlaylist(currentMedia) },
+                        modifier = Modifier.minimumInteractiveComponentSize()
+                    ) {
                         Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, contentDescription = "Add to playlist")
                     }
                 }
                 IconButton(
                     onClick = { showQueueSheet = true },
-                    modifier = Modifier.testTag("audio_player_queue_button")
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("audio_player_queue_button")
                 ) {
                     Icon(Icons.AutoMirrored.Rounded.QueueMusic, contentDescription = "Up next queue")
                 }
@@ -472,13 +700,29 @@ fun AudioPlayerScreen(
     }
 
     if (showQueueSheet) {
+        val keyedQueue = remember(playbackState.queue) {
+            val seen = mutableMapOf<String, Int>()
+            playbackState.queue.map { item ->
+                val occurrence = (seen[item.uri] ?: 0) + 1
+                seen[item.uri] = occurrence
+                "${item.uri}#$occurrence" to item
+            }
+        }
         ModalBottomSheet(onDismissRequest = { showQueueSheet = false }) {
             Column(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    text = "Up Next Queue (${playbackState.queue.size})",
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)
-                )
+                Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)) {
+                    Text(
+                        text = "Up Next Queue (${playbackState.queue.size})",
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                    if (playbackState.queue.isNotEmpty()) {
+                        Text(
+                            text = "Tap to jump • Swipe left to remove from queue",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = 20.dp, vertical = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -508,50 +752,277 @@ fun AudioPlayerScreen(
                     }
                 }
                 LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
-                    itemsIndexed(playbackState.queue) { index, item ->
+                    itemsIndexed(keyedQueue, key = { _, pair -> pair.first }) { index, (_, item) ->
                         val active = index == playbackState.currentQueueIndex
                         val isSmartPick = item.uri in playbackState.smartPickUris
-                        ListItem(
-                            headlineContent = {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        val currentIndex by rememberUpdatedState(index)
+                        val dismissState = rememberSwipeToDismissBoxState(
+                            confirmValueChange = { value ->
+                                value == SwipeToDismissBoxValue.EndToStart
+                            }
+                        )
+
+                        LaunchedEffect(dismissState.currentValue) {
+                            if (dismissState.currentValue == SwipeToDismissBoxValue.EndToStart) {
+                                onRemoveFromQueue(currentIndex)
+                            }
+                        }
+
+                        SwipeToDismissBox(
+                            state = dismissState,
+                            enableDismissFromStartToEnd = false,
+                            enableDismissFromEndToStart = true,
+                            modifier = Modifier
+                                .animateItem()
+                                .testTag("queue_swipe_item_$index"),
+                            backgroundContent = {
+                                val isArmed = dismissState.targetValue == SwipeToDismissBoxValue.EndToStart
+                                val bgColor by animateColorAsState(
+                                    targetValue = if (isArmed) {
+                                        MaterialTheme.colorScheme.errorContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceContainerHigh
+                                    },
+                                    label = "queue_swipe_bg"
+                                )
+                                val contentColor by animateColorAsState(
+                                    targetValue = if (isArmed) {
+                                        MaterialTheme.colorScheme.onErrorContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    label = "queue_swipe_fg"
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(bgColor)
+                                        .padding(horizontal = 20.dp),
+                                    contentAlignment = Alignment.CenterEnd
                                 ) {
-                                    Text(
-                                        text = item.title,
-                                        fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
-                                        color = if (active) primaryColor else MaterialTheme.colorScheme.onSurface,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f, fill = false)
-                                    )
-                                    if (isSmartPick) {
-                                        Surface(
-                                            shape = RoundedCornerShape(6.dp),
-                                            color = secondaryColor.copy(alpha = 0.2f)
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Text(
+                                            text = "Remove",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = contentColor
+                                        )
+                                        Icon(
+                                            imageVector = Icons.Rounded.DeleteOutline,
+                                            contentDescription = "Remove from queue",
+                                            tint = contentColor
+                                        )
+                                    }
+                                }
+                            }
+                        ) {
+                            ListItem(
+                                headlineContent = {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = item.title,
+                                            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (active) primaryColor else MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f, fill = false)
+                                        )
+                                        if (isSmartPick) {
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = secondaryColor.copy(alpha = 0.2f)
+                                            ) {
+                                                Text(
+                                                    text = "Smart Pick",
+                                                    style = MonoMetricsStyle.copy(fontSize = 10.sp),
+                                                    color = secondaryColor,
+                                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                },
+                                supportingContent = { Text(item.artist) },
+                                colors = ListItemDefaults.colors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+                                ),
+                                trailingContent = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (item.durationMs > 0L) {
+                                            Text(formatDuration(item.durationMs), style = MonoMetricsStyle)
+                                        }
+                                        IconButton(
+                                            onClick = { onRemoveFromQueue(currentIndex) },
+                                            modifier = Modifier
+                                                .minimumInteractiveComponentSize()
+                                                .testTag("queue_remove_button_$index")
                                         ) {
-                                            Text(
-                                                text = "Smart Pick",
-                                                style = MonoMetricsStyle.copy(fontSize = 10.sp),
-                                                color = secondaryColor,
-                                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                            Icon(
+                                                imageVector = Icons.Rounded.Close,
+                                                contentDescription = "Remove from queue"
                                             )
                                         }
                                     }
+                                },
+                                modifier = Modifier.clickable {
+                                    onSkipToQueueIndex(currentIndex)
+                                    showQueueSheet = false
                                 }
-                            },
-                            supportingContent = { Text(item.artist) },
-                            trailingContent = {
-                                if (item.durationMs > 0L) {
-                                    Text(formatDuration(item.durationMs), style = MonoMetricsStyle)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showLikedSheet) {
+        ModalBottomSheet(onDismissRequest = { showLikedSheet = false }) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "Liked Songs (${likedAudioTracks.size})",
+                    style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+                )
+                if (likedAudioTracks.isEmpty()) {
+                    Text(
+                        text = "No liked songs yet. Tap or double-tap artwork to favourite a track.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 20.dp)
+                    )
+                } else {
+                    LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
+                        itemsIndexed(likedAudioTracks) { index, item ->
+                            val isCurrent = item.uri == playbackState.currentUri
+                            ListItem(
+                                headlineContent = {
+                                    Text(
+                                        text = item.title,
+                                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (isCurrent) primaryColor else MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                },
+                                supportingContent = {
+                                    Text(
+                                        text = item.artist,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                },
+                                leadingContent = {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Favorite,
+                                        contentDescription = null,
+                                        tint = secondaryColor
+                                    )
+                                },
+                                trailingContent = {
+                                    if (item.durationMs > 0L) {
+                                        Text(formatDuration(item.durationMs), style = MonoMetricsStyle)
+                                    }
+                                },
+                                modifier = Modifier.clickable {
+                                    onPlayQueue(likedAudioTracks, index)
+                                    showLikedSheet = false
                                 }
-                            },
-                            modifier = Modifier.clickable {
-                                onSkipToQueueIndex(index)
-                                showQueueSheet = false
-                            }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showLyricsSheet) {
+        ModalBottomSheet(onDismissRequest = { showLyricsSheet = false }) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Lyrics & Subtitles",
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                    FilledTonalButton(
+                        onClick = { subtitleFileLauncher.launch(arrayOf("*/*")) },
+                        modifier = Modifier.testTag("audio_load_lyrics_button")
+                    ) {
+                        Icon(Icons.Rounded.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Load LRC/SRT")
+                    }
+                }
+
+                if (subtitleText.isNotBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = primaryColor.copy(alpha = 0.14f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = subtitleText,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(14.dp)
                         )
                     }
+                }
+
+                if (playbackState.externalCues.isNotEmpty()) {
+                    LazyColumn(
+                        contentPadding = PaddingValues(bottom = 24.dp),
+                        modifier = Modifier.height(280.dp)
+                    ) {
+                        items(playbackState.externalCues) { cue ->
+                            val isActiveLine = playbackState.currentPositionMs in cue.startMs..cue.endMs
+                            ListItem(
+                                headlineContent = {
+                                    Text(
+                                        text = cue.text,
+                                        fontWeight = if (isActiveLine) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (isActiveLine) primaryColor else MaterialTheme.colorScheme.onSurface
+                                    )
+                                },
+                                trailingContent = {
+                                    Text(formatDuration(cue.startMs), style = MonoMetricsStyle)
+                                },
+                                modifier = Modifier.clickable {
+                                    onSeekTo(cue.startMs)
+                                }
+                            )
+                        }
+                    }
+                } else if (playbackState.activeCues.isNotEmpty()) {
+                    Text(
+                        text = playbackState.activeCues.joinToString("\n"),
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.padding(vertical = 12.dp)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                } else {
+                    Text(
+                        text = "No lyrics or subtitle file attached yet. Tap \"Load LRC/SRT\" to attach .lrc, .srt, or .vtt lyrics for this track.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 16.dp)
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
                 }
             }
         }

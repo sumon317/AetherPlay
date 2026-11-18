@@ -68,12 +68,41 @@ object SubtitleParser {
     internal fun parseRawSubtitles(raw: String): List<TimedSubtitleCue> {
         if (raw.isBlank()) return emptyList()
         val bounded = if (raw.length > MAX_SUBTITLE_CHARS) raw.substring(0, MAX_SUBTITLE_CHARS) else raw
-        val cues = if (bounded.contains("WEBVTT", ignoreCase = true)) {
-            parseVtt(bounded)
-        } else {
-            parseSrt(bounded)
+        val cues = when {
+            bounded.contains("WEBVTT", ignoreCase = true) -> parseVtt(bounded)
+            bounded.contains("-->") -> parseSrt(bounded)
+            else -> parseLrc(bounded)
         }
         return if (cues.size > MAX_SUBTITLE_CUES) cues.take(MAX_SUBTITLE_CUES) else cues
+    }
+
+    private fun parseLrc(raw: String): List<TimedSubtitleCue> {
+        val lineRegex = Regex("""\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?]\s*(.*)""")
+        val rawEntries = mutableListOf<Pair<Long, String>>()
+        for (line in raw.lineSequence()) {
+            if (rawEntries.size >= MAX_SUBTITLE_CUES) break
+            val match = lineRegex.find(line.trim()) ?: continue
+            val min = match.groupValues[1].toLongOrNull() ?: continue
+            val sec = match.groupValues[2].toLongOrNull()?.coerceIn(0L, 59L) ?: continue
+            val fracToken = match.groupValues[3]
+            val ms = when (fracToken.length) {
+                0 -> 0L
+                1 -> (fracToken.toLongOrNull() ?: 0L) * 100L
+                2 -> (fracToken.toLongOrNull() ?: 0L) * 10L
+                else -> fracToken.take(3).toLongOrNull() ?: 0L
+            }
+            val lyric = match.groupValues[4].replace(Regex("<[^>]*>"), "").trim()
+            val startMs = ((min * 60L) + sec) * 1000L + ms
+            if (lyric.isNotEmpty()) {
+                rawEntries += startMs to lyric
+            }
+        }
+        if (rawEntries.isEmpty()) return emptyList()
+        val sorted = rawEntries.sortedBy { it.first }
+        return sorted.mapIndexed { idx, (startMs, text) ->
+            val endMs = sorted.getOrNull(idx + 1)?.first?.coerceAtLeast(startMs + 500L) ?: (startMs + 6000L)
+            TimedSubtitleCue(startMs = startMs, endMs = endMs, text = text)
+        }
     }
 
     private fun readBoundedText(reader: BufferedReader, maxChars: Int): String {

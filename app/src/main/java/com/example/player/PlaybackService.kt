@@ -18,11 +18,15 @@ import androidx.media3.session.MediaSessionService
 import com.example.AetherPlayApp
 import com.example.MainActivity
 import com.example.data.local.DecoderMode
+import io.github.anilbeesetti.nextlib.media3ext.ffdecoder.NextRenderersFactory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
@@ -32,6 +36,8 @@ class PlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
     private var player: ExoPlayer? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private lateinit var sharedDataSourceFactory: DefaultDataSource.Factory
+    private lateinit var audioSessionListener: Player.Listener
 
     @OptIn(UnstableApi::class)
     override fun onCreate() {
@@ -47,39 +53,16 @@ class PlaybackService : MediaSessionService() {
 
         val httpFactory = OkHttpDataSource.Factory(okHttpClient)
             .setUserAgent("AetherPlay/1.0 (Android; Media3)")
-        val dataSourceFactory = DefaultDataSource.Factory(this, httpFactory)
+        sharedDataSourceFactory = DefaultDataSource.Factory(this, httpFactory)
 
-        val renderersFactory = DefaultRenderersFactory(this).apply {
-            setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
-            setEnableDecoderFallback(true)
-        }
-
-        val audioAttributes = AudioAttributes.Builder()
-            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
-            .setUsage(C.USAGE_MEDIA)
-            .build()
-
-        val exoPlayer = ExoPlayer.Builder(this, renderersFactory)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
-            .setAudioAttributes(audioAttributes, true)
-            .setHandleAudioBecomingNoisy(true)
-            .setWakeMode(C.WAKE_MODE_NETWORK)
-            .build()
-
-        exoPlayer.addListener(object : Player.Listener {
+        audioSessionListener = object : Player.Listener {
             override fun onAudioSessionIdChanged(audioSessionId: Int) {
                 equalizerEngine.attachToAudioSession(audioSessionId)
             }
-        })
+        }
 
-        serviceScope.launch {
-            val savedEq = app.container.mediaRepository.getEqualizerSettings()
-            equalizerEngine.loadPersistedSettings(savedEq)
-            if (exoPlayer.audioSessionId != C.AUDIO_SESSION_ID_UNSET && exoPlayer.audioSessionId > 0) {
-                equalizerEngine.attachToAudioSession(exoPlayer.audioSessionId)
-            }
-            val prefs = app.container.settingsRepository.preferencesFlow.first()
-            applyDecoderPreferences(exoPlayer, prefs.decoderMode)
+        val initialPlayer = createExoPlayer(DecoderMode.HARDWARE_FIRST).apply {
+            addListener(audioSessionListener)
         }
 
         val openAppIntent = Intent(this, MainActivity::class.java).apply {
@@ -94,20 +77,97 @@ class PlaybackService : MediaSessionService() {
 
         setMediaNotificationProvider(DefaultMediaNotificationProvider(this))
 
-        player = exoPlayer
-        mediaSession = MediaSession.Builder(this, exoPlayer)
+        player = initialPlayer
+        mediaSession = MediaSession.Builder(this, initialPlayer)
             .setSessionActivity(pendingIntent)
+            .build()
+
+        serviceScope.launch {
+            val savedEq = app.container.mediaRepository.getEqualizerSettings()
+            equalizerEngine.loadPersistedSettings(savedEq)
+            if (initialPlayer.audioSessionId != C.AUDIO_SESSION_ID_UNSET && initialPlayer.audioSessionId > 0) {
+                equalizerEngine.attachToAudioSession(initialPlayer.audioSessionId)
+            }
+
+            val initialPrefs = app.container.settingsRepository.preferencesFlow.first()
+            if (initialPrefs.decoderMode != DecoderMode.HARDWARE_FIRST) {
+                rebuildPlayerForDecoderMode(initialPrefs.decoderMode, equalizerEngine)
+            }
+
+            app.container.settingsRepository.preferencesFlow
+                .map { it.decoderMode }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect { nextMode ->
+                    rebuildPlayerForDecoderMode(nextMode, equalizerEngine)
+                }
+        }
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun createExoPlayer(mode: DecoderMode): ExoPlayer {
+        val extensionMode = when (mode) {
+            DecoderMode.SOFTWARE_PREFERRED -> DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
+            DecoderMode.HARDWARE_FIRST, DecoderMode.AUTO -> DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
+        }
+
+        val renderersFactory = NextRenderersFactory(this).apply {
+            setExtensionRendererMode(extensionMode)
+            setEnableDecoderFallback(true)
+        }
+
+        val audioAttributes = AudioAttributes.Builder()
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+            .setUsage(C.USAGE_MEDIA)
+            .build()
+
+        return ExoPlayer.Builder(this, renderersFactory)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(sharedDataSourceFactory))
+            .setAudioAttributes(audioAttributes, true)
+            .setHandleAudioBecomingNoisy(true)
+            .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
     }
 
-    private fun applyDecoderPreferences(exoPlayer: ExoPlayer, mode: DecoderMode) {
-        val params = exoPlayer.trackSelectionParameters.buildUpon()
-        when (mode) {
-            DecoderMode.HARDWARE_FIRST -> params.setForceLowestBitrate(false)
-            DecoderMode.AUTO -> params.setForceLowestBitrate(false)
-            DecoderMode.SOFTWARE_PREFERRED -> params.setForceLowestBitrate(false)
+    @OptIn(UnstableApi::class)
+    private fun rebuildPlayerForDecoderMode(
+        mode: DecoderMode,
+        equalizerEngine: EqualizerEngine
+    ) {
+        val oldPlayer = player ?: return
+        val session = mediaSession ?: return
+
+        val count = oldPlayer.mediaItemCount
+        val items = (0 until count).map { oldPlayer.getMediaItemAt(it) }
+        val currentIdx = oldPlayer.currentMediaItemIndex.coerceAtLeast(0)
+        val currentPos = oldPlayer.currentPosition.coerceAtLeast(0L)
+        val playWhenReady = oldPlayer.playWhenReady
+        val repeatMode = oldPlayer.repeatMode
+        val shuffleEnabled = oldPlayer.shuffleModeEnabled
+        val playbackParams = oldPlayer.playbackParameters
+        val trackParams = oldPlayer.trackSelectionParameters
+
+        val newPlayer = createExoPlayer(mode).apply {
+            addListener(audioSessionListener)
+            this.repeatMode = repeatMode
+            this.shuffleModeEnabled = shuffleEnabled
+            this.playbackParameters = playbackParams
+            this.trackSelectionParameters = trackParams
+            if (items.isNotEmpty()) {
+                setMediaItems(items, currentIdx.coerceIn(0, items.lastIndex), currentPos)
+                prepare()
+                this.playWhenReady = playWhenReady
+            }
         }
-        exoPlayer.trackSelectionParameters = params.build()
+
+        session.player = newPlayer
+        player = newPlayer
+        oldPlayer.removeListener(audioSessionListener)
+        oldPlayer.release()
+
+        if (newPlayer.audioSessionId != C.AUDIO_SESSION_ID_UNSET && newPlayer.audioSessionId > 0) {
+            equalizerEngine.attachToAudioSession(newPlayer.audioSessionId)
+        }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession

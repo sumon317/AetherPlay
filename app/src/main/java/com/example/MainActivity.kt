@@ -410,10 +410,12 @@ private fun AetherPlayRoot(
         libraryViewModel.clearStatusBanner()
     }
 
-    LaunchedEffect(playbackState.errorMessage) {
+    LaunchedEffect(playbackState.errorMessage, isVideoScreen) {
         val err = playbackState.errorMessage ?: return@LaunchedEffect
-        snackbarHostState.showSnackbar(err)
-        playerViewModel.clearError()
+        if (!isVideoScreen) {
+            snackbarHostState.showSnackbar(err)
+            playerViewModel.clearError()
+        }
     }
 
     val isFullScreenPlayer = currentDest?.hasRoute<VideoPlayerRoute>() == true ||
@@ -710,6 +712,9 @@ private fun AetherPlayRoot(
                                 },
                                 onRemoveItem = { mediaUri ->
                                     libraryViewModel.removeFromPlaylist(route.playlistId, mediaUri)
+                                },
+                                onRestoreItem = { mediaUri ->
+                                    libraryViewModel.restoreToPlaylist(route.playlistId, mediaUri)
                                 }
                             )
                         }
@@ -724,6 +729,8 @@ private fun AetherPlayRoot(
                                 onSetResumePlayback = settingsViewModel::setResumePlayback,
                                 onSetBackgroundVideoAudio = settingsViewModel::setBackgroundVideoAudio,
                                 onSetAutoPip = settingsViewModel::setAutoPip,
+                                onSetMinVideoDurationSeconds = settingsViewModel::setMinVideoDurationSeconds,
+                                onSetMinAudioDurationSeconds = settingsViewModel::setMinAudioDurationSeconds,
                                 onUpdateSubtitlePrefs = settingsViewModel::updateSubtitlePreferences,
                                 onOpenEqualizer = {
                                     navController.navigate(EqualizerRoute) { launchSingleTop = true }
@@ -747,6 +754,10 @@ private fun AetherPlayRoot(
                                 onSetDoubleTapSeek = settingsViewModel::setDoubleTapSeek,
                                 onSetDefaultSeekSeconds = settingsViewModel::setDefaultSeekSeconds,
                                 onSetLongPress2x = settingsViewModel::setLongPress2x,
+                                onSetRotateAudioArtwork = settingsViewModel::setRotateAudioArtwork,
+                                onSetAudioSwipeDownAction = settingsViewModel::setAudioSwipeDownAction,
+                                onSetAudioSwipeUpAction = settingsViewModel::setAudioSwipeUpAction,
+                                onSetAudioDoubleTapAction = settingsViewModel::setAudioDoubleTapAction,
                                 onResetDefaults = settingsViewModel::resetGestureDefaults
                             )
                         }
@@ -790,24 +801,40 @@ private fun AetherPlayRoot(
                                 onToggleShuffle = playerViewModel::toggleShuffle,
                                 onSetShuffleMode = playerViewModel::setShuffleMode,
                                 onCycleRepeat = playerViewModel::cycleRepeat,
-                                onSetRepeatMode = playerViewModel::setRepeatMode
+                                onSetRepeatMode = playerViewModel::setRepeatMode,
+                                onRetryPlayback = playerViewModel::retryCurrentPlayback,
+                                onRetryWithSoftwareDecoder = playerViewModel::retryWithSoftwareDecoder,
+                                onDismissError = playerViewModel::clearError
                             )
                         }
 
                         composable<AudioPlayerRoute> {
+                            val subText = playerViewModel.resolveVisibleSubtitles(playbackState, preferences.subtitle)
+                            val likedAudioTracks = remember(libraryState.likedItems) {
+                                libraryState.likedItems.filter { !it.isVideo }
+                            }
                             AudioPlayerScreen(
                                 playbackState = playbackState,
                                 currentMedia = currentMedia,
+                                preferences = preferences,
+                                likedAudioTracks = likedAudioTracks,
+                                subtitleText = subText,
                                 onBack = { navController.popBackStack() },
                                 onOpenEqualizer = {
                                     navController.navigate(EqualizerRoute) { launchSingleTop = true }
                                 },
                                 onAddToPlaylist = { playlistTargetMedia = it },
+                                onPlayQueue = { items, idx ->
+                                    ensureNotificationPermission()
+                                    libraryViewModel.playMediaQueue(items, idx)
+                                },
+                                onAttachExternalSubtitle = playerViewModel::attachExternalSubtitle,
                                 onTogglePlayPause = playerViewModel::togglePlayPause,
                                 onSeekTo = playerViewModel::seekTo,
                                 onSkipNext = playerViewModel::skipNext,
                                 onSkipPrevious = playerViewModel::skipPrevious,
                                 onSkipToQueueIndex = playerViewModel::skipToQueueIndex,
+                                onRemoveFromQueue = playerViewModel::removeFromQueue,
                                 onToggleShuffle = playerViewModel::toggleShuffle,
                                 onSetShuffleMode = playerViewModel::setShuffleMode,
                                 onCycleRepeat = playerViewModel::cycleRepeat,

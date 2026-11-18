@@ -179,7 +179,10 @@ fun VideoPlayerScreen(
     onToggleShuffle: () -> Unit,
     onSetShuffleMode: (ShuffleMode) -> Unit,
     onCycleRepeat: () -> Unit,
-    onSetRepeatMode: (Int) -> Unit
+    onSetRepeatMode: (Int) -> Unit,
+    onRetryPlayback: () -> Unit,
+    onRetryWithSoftwareDecoder: () -> Unit,
+    onDismissError: () -> Unit
 ) {
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
@@ -508,6 +511,55 @@ fun VideoPlayerScreen(
                     Icon(Icons.Rounded.LockOpen, contentDescription = "Unlock screen", tint = MaterialTheme.colorScheme.primary)
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Tap to Unlock", color = Color.White, style = MaterialTheme.typography.labelLarge)
+                }
+            }
+        }
+
+        // Interactive Playback Error Overlay with Software Decoder Fallback
+        val currentError = playbackState.errorMessage
+        if (!currentError.isNullOrBlank() && !isInPipMode) {
+            Surface(
+                shape = RoundedCornerShape(22.dp),
+                color = Color.Black.copy(alpha = 0.88f),
+                tonalElevation = 8.dp,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(horizontal = 24.dp)
+                    .testTag("video_error_overlay")
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "Playback Issue",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White
+                    )
+                    Text(
+                        text = currentError,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.78f),
+                        textAlign = TextAlign.Center
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedButton(onClick = onRetryPlayback) {
+                            Text("Retry", color = Color.White)
+                        }
+                        Button(
+                            onClick = onRetryWithSoftwareDecoder,
+                            modifier = Modifier.testTag("video_retry_software_decoder")
+                        ) {
+                            Text("Software Decoder")
+                        }
+                    }
+                    OutlinedButton(onClick = onDismissError) {
+                        Text("Dismiss", color = Color.White.copy(alpha = 0.8f))
+                    }
                 }
             }
         }

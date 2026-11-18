@@ -87,6 +87,7 @@ class PlayerViewModel(
     fun skipNext() = playerController.skipToNext()
     fun skipPrevious() = playerController.skipToPrevious()
     fun skipToQueueIndex(index: Int) = playerController.skipToQueueIndex(index)
+    fun removeFromQueue(index: Int) = playerController.removeFromQueue(index)
     fun setSpeed(speed: Float) = playerController.setPlaybackSpeed(speed)
     fun setPitch(pitch: Float) = playerController.setPlaybackPitch(pitch)
     fun cycleRepeat() = playerController.cycleRepeatMode()
@@ -99,6 +100,7 @@ class PlayerViewModel(
     fun setSleepTimer(minutes: Int?) = playerController.setSleepTimer(minutes)
     fun toggleAbLoop() = playerController.toggleAbLoopPoint()
     fun clearError() = playerController.clearError()
+    fun retryCurrentPlayback() = playerController.retryCurrentPlayback()
 
     fun retryWithSoftwareDecoder() {
         viewModelScope.launch {

@@ -18,6 +18,7 @@ import androidx.media3.common.text.CueGroup
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import com.example.data.local.DecoderMode
 import com.example.data.local.MediaItemEntity
 import com.example.data.local.SettingsRepository
 import com.example.data.repository.MediaRepository
@@ -140,10 +141,19 @@ class PlayerControllerHolder(
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
+                val dur = ctrl.duration.coerceAtLeast(0L)
+                val uri = ctrl.currentMediaItem?.mediaId
+                if (playbackState == Player.STATE_READY && uri != null && dur > 0L) {
+                    val w = _uiState.value.videoWidth
+                    val h = _uiState.value.videoHeight
+                    scope.launch {
+                        mediaRepository.updateMissingTechnicalMetadata(uri, dur, w, h)
+                    }
+                }
                 _uiState.update {
                     it.copy(
                         isBuffering = playbackState == Player.STATE_BUFFERING,
-                        durationMs = ctrl.duration.coerceAtLeast(0L)
+                        durationMs = dur
                     )
                 }
             }
@@ -200,6 +210,13 @@ class PlayerControllerHolder(
             override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
                 _uiState.update {
                     it.copy(videoWidth = videoSize.width, videoHeight = videoSize.height)
+                }
+                val uri = ctrl.currentMediaItem?.mediaId
+                if (uri != null && videoSize.width > 0 && videoSize.height > 0) {
+                    val dur = ctrl.duration.coerceAtLeast(0L)
+                    scope.launch {
+                        mediaRepository.updateMissingTechnicalMetadata(uri, dur, videoSize.width, videoSize.height)
+                    }
                 }
             }
 
@@ -302,6 +319,7 @@ class PlayerControllerHolder(
                     shuffleEnabled = activeShuffleMode != ShuffleMode.OFF,
                     smartPickUris = smartResult?.smartPickUris.orEmpty(),
                     repeatMode = prefs.repeatMode,
+                    isHardwareAccelerated = prefs.decoderMode != DecoderMode.SOFTWARE_PREFERRED,
                     errorMessage = null,
                     abLoopStartMs = null,
                     abLoopEndMs = null,
@@ -384,6 +402,40 @@ class PlayerControllerHolder(
                 ctrl.seekTo(index, 0L)
                 ctrl.play()
             }
+        }
+    }
+
+    fun removeFromQueue(index: Int) {
+        val ctrl = _controller.value ?: return
+        val currentQueue = _uiState.value.queue
+        if (index !in currentQueue.indices || index !in 0 until ctrl.mediaItemCount) return
+
+        if (currentQueue.size <= 1) {
+            stopAndClear()
+            return
+        }
+
+        val removedItem = currentQueue[index]
+        val wasCurrent = index == ctrl.currentMediaItemIndex
+        val updatedQueue = currentQueue.toMutableList().apply { removeAt(index) }
+        originalQueue = originalQueue.toMutableList().apply {
+            val origIdx = indexOfFirst { it.uri == removedItem.uri }
+            if (origIdx >= 0) removeAt(origIdx)
+        }
+        val updatedSmartPicks = _uiState.value.smartPickUris - removedItem.uri
+
+        ctrl.removeMediaItem(index)
+        val nextIndex = ctrl.currentMediaItemIndex.coerceIn(0, updatedQueue.lastIndex)
+
+        _uiState.update {
+            it.copy(
+                queue = updatedQueue,
+                currentQueueIndex = nextIndex,
+                smartPickUris = updatedSmartPicks
+            )
+        }
+        if (wasCurrent) {
+            syncFullState(ctrl)
         }
     }
 
@@ -606,6 +658,55 @@ class PlayerControllerHolder(
         _uiState.update { it.copy(errorMessage = null) }
     }
 
+    fun retryCurrentPlayback() {
+        scope.launch {
+            connect()
+            var waitCount = 0
+            while (_controller.value == null && waitCount < 30) {
+                delay(50L)
+                waitCount++
+            }
+            val ctrl = _controller.value ?: return@launch
+            val state = _uiState.value
+            val currentUri = ctrl.currentMediaItem?.mediaId ?: state.currentUri
+            val queue = state.queue
+            val resumePos = state.currentPositionMs.coerceAtLeast(0L)
+
+            if (queue.isNotEmpty()) {
+                val idx = queue.indexOfFirst { it.uri == currentUri }.coerceAtLeast(0)
+                val mediaItems = queue.map { buildMediaItem(it) }
+                val prefs = settingsRepository.preferencesFlow.first()
+                _uiState.update {
+                    it.copy(
+                        errorMessage = null,
+                        isHardwareAccelerated = prefs.decoderMode != DecoderMode.SOFTWARE_PREFERRED
+                    )
+                }
+                ctrl.setMediaItems(mediaItems, idx, resumePos)
+                ctrl.prepare()
+                ctrl.play()
+                syncFullState(ctrl)
+            } else if (currentUri != null) {
+                val entity = mediaRepository.getMediaByUri(currentUri) ?: return@launch
+                val prefs = settingsRepository.preferencesFlow.first()
+                _uiState.update {
+                    it.copy(
+                        errorMessage = null,
+                        isHardwareAccelerated = prefs.decoderMode != DecoderMode.SOFTWARE_PREFERRED
+                    )
+                }
+                ctrl.setMediaItem(buildMediaItem(entity), resumePos)
+                ctrl.prepare()
+                ctrl.play()
+                syncFullState(ctrl)
+            } else {
+                _uiState.update { it.copy(errorMessage = null) }
+                ctrl.prepare()
+                ctrl.play()
+            }
+        }
+    }
+
     private fun buildMediaItem(entity: MediaItemEntity): MediaItem {
         val extras = Bundle().apply {
             putBoolean("is_video", entity.isVideo)
@@ -664,7 +765,7 @@ class PlayerControllerHolder(
         val audioList = mutableListOf<TrackOption>()
         val subList = mutableListOf<TrackOption>()
         var badgeParts = mutableListOf<String>()
-        var isHw = true
+        var isHw = _uiState.value.isHardwareAccelerated
 
         tracks.groups.forEachIndexed { groupIdx, group ->
             for (trackIdx in 0 until group.length) {
@@ -677,7 +778,9 @@ class PlayerControllerHolder(
                             val res = if (format.height > 0) "${format.height}p" else ""
                             val fps = if (format.frameRate > 0f) "${format.frameRate.toInt()}fps" else ""
                             badgeParts.addAll(listOf(codec, res, fps).filter { it.isNotBlank() })
-                            isHw = format.sampleMimeType != "video/x-vnd.on2.vp8"
+                            if (format.sampleMimeType == "video/x-vnd.on2.vp8") {
+                                isHw = false
+                            }
                         }
                     }
                     C.TRACK_TYPE_AUDIO -> {

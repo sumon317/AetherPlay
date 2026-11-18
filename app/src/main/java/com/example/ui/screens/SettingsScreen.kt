@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.DarkMode
+import androidx.compose.material.icons.rounded.FilterAlt
 import androidx.compose.material.icons.rounded.Gesture
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Memory
@@ -62,6 +63,8 @@ fun SettingsScreen(
     onSetResumePlayback: (Boolean) -> Unit,
     onSetBackgroundVideoAudio: (Boolean) -> Unit,
     onSetAutoPip: (Boolean) -> Unit,
+    onSetMinVideoDurationSeconds: (Int) -> Unit,
+    onSetMinAudioDurationSeconds: (Int) -> Unit,
     onUpdateSubtitlePrefs: ((SubtitlePreferences) -> SubtitlePreferences) -> Unit,
     onOpenEqualizer: () -> Unit,
     onOpenGestureControls: () -> Unit,
@@ -249,6 +252,52 @@ fun SettingsScreen(
                             modifier = Modifier.testTag("settings_open_gestures_button")
                         ) {
                             Text("Configure")
+                        }
+                    }
+                }
+            }
+
+            // Library Duration Filters
+            item {
+                val durationPresets = listOf(0 to "All", 5 to "5s+", 15 to "15s+", 30 to "30s+", 60 to "60s+")
+                SettingsSectionCard(title = "Library Filters", icon = Icons.Rounded.FilterAlt) {
+                    Text(
+                        text = "Minimum Video Duration",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                    Text(
+                        text = "Hide short clips below threshold (keeps live streams)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(durationPresets) { (sec, label) ->
+                            FilterChip(
+                                selected = preferences.minVideoDurationSeconds == sec,
+                                onClick = { onSetMinVideoDurationSeconds(sec) },
+                                label = { Text(label) },
+                                modifier = Modifier.testTag("min_video_dur_$sec")
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Minimum Audio Duration",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                    Text(
+                        text = "Filter out short notification tones & voice snippets",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(durationPresets) { (sec, label) ->
+                            FilterChip(
+                                selected = preferences.minAudioDurationSeconds == sec,
+                                onClick = { onSetMinAudioDurationSeconds(sec) },
+                                label = { Text(label) },
+                                modifier = Modifier.testTag("min_audio_dur_$sec")
+                            )
                         }
                     }
                 }
